@@ -12,7 +12,7 @@ Usage:
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Annotated, cast
+from typing import Annotated, Coroutine, cast
 
 import typer
 import uvicorn
@@ -78,7 +78,7 @@ from utils.rate_limiter import (
 _background_tasks: set[asyncio.Task[None]] = set()
 
 
-def create_background_task(coroutine) -> asyncio.Task[None]:
+def create_background_task(coroutine: Coroutine[object, object, None]) -> asyncio.Task[None]:
     """Create a background task that won't be garbage collected before completion."""
     task = asyncio.create_task(coroutine)
     _background_tasks.add(task)
@@ -468,12 +468,14 @@ async def websocket_endpoint(websocket: WebSocket, request: Request) -> None:
     # Require UUID - clients must register first
     if not client_uuid:
         logger.warning("Rejected connection without client UUID")
+        await websocket.accept()
         await websocket.close(code=1008, reason="Client UUID required. Please register first.")
         return
 
     # Validate UUID is registered
     if not services.client_manager.is_registered(client_uuid):
         logger.warning(f"Rejected unregistered client UUID: {client_uuid}")
+        await websocket.accept()
         await websocket.close(code=1008, reason="Unregistered client UUID. Please register first.")
         return
 
@@ -543,8 +545,10 @@ async def websocket_endpoint(websocket: WebSocket, request: Request) -> None:
     except Exception as e:
         logger.error(f"Pipeline error: {e}")
     finally:
-        # Unregister the connection
-        services.client_manager.unregister_connection(client_uuid)
+        # Unregister the connection if it still exists
+        # (it may have been removed during cleanup)
+        if services.client_manager.get_connection(client_uuid) is not None:
+            services.client_manager.unregister_connection(client_uuid)
 
 
 def main(
