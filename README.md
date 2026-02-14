@@ -90,18 +90,18 @@ Open-source alternative to [Wispr Flow](https://wisprflow.ai), [Superwhisper](ht
 │                      Tauri App (app/)                       │
 │  - Global hotkeys (Ctrl+Alt+Space, Ctrl+Alt+`)              │
 │  - Rust backend for keyboard and audio controls             │
-│  - React frontend with SmallWebRTC client                   │
+│  - React frontend with WebSocket client                     │
 │  - System tray with show/hide toggle                        │
 └─────────────────────────────┬───────────────────────────────┘
                               │
-                          API :8765
+                      WebSocket :8765/ws
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                  Python Server (server/)                    │
-│  - Pipecat SmallWebRTC for audio streaming                  │
+│  - Pipecat FastAPI WebSocket transport                      │
 │  - STT providers (Cartesia, Deepgram, Groq, and more)       │
 │  - LLM formatting (Cerebras, OpenAI, Anthropic, and more)   │
-│  - Runtime config via WebRTC data channel (RTVI protocol)   │
+│  - Runtime config via WebSocket (RTVI protocol)             │
 │  - Returns cleaned text to app                              │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -213,7 +213,6 @@ uv run python main.py --verbose
 ## Docker Deployment
 
 Run the server in Docker instead of installing Python dependencies locally.
-Server requires host networking due to RTP/WebRTC random UDP port assignments.
 
 To use GPU acceleration for a locally hosted Whisper model, set up GPU access for your container daemon:
 
@@ -241,13 +240,7 @@ docker compose down && docker compose up --build -d
 
 The `.env` file is read at runtime (not baked into the image), so your API keys stay secure.
 
-### Docker Networking Troubleshooting
-
-If the container shows as running and logs print `Tambourine Server Ready!`, but the client still cannot connect (or `http://127.0.0.1:8765/health` fails from your host), verify that host networking is actually enabled/supported by your Docker runtime.
-
-This project uses `network_mode: "host"` in `server/docker-compose.yml` for WebRTC/RTP reliability. If host networking is disabled in your Docker setup, the container can appear healthy while still being unreachable from the app.
-
-If you see `CDI device injection failed: unresolvable CDI devices nvidia.com/gpu=all`, your runtime is likely trying to use the Podman GPU stanza with Docker. In `server/docker-compose.yml`, keep the GPU block that matches your runtime and disable the other one.
+The server uses standard port mapping (8765:8765) for WebSocket connections, making it simple to deploy in any environment without special networking requirements.
 
 ## App Commands
 
@@ -264,10 +257,11 @@ pnpm build         # Build for current platform
 
 ## API Reference
 
-The server exposes HTTP endpoints on port 8765 (default). Sample endpoints:
+The server exposes HTTP and WebSocket endpoints on port 8765 (default). Key endpoints:
 
 - `GET /health` - Health check for container orchestration
 - `GET /api/providers` - List available STT and LLM providers
+- `WS /ws` - WebSocket endpoint for audio streaming and RTVI protocol messages
 
 See `server/main.py` and `server/api/config_api.py` for all endpoints. All endpoints are rate-limited.
 
@@ -281,7 +275,7 @@ You can optionally configure Silero VAD parameters via environment variables (se
 
 ### App Configuration
 
-The app connects to `http://127.0.0.1:8765` by default via WebRTC. Settings are persisted locally and include:
+The app connects to `ws://127.0.0.1:8765/ws` by default via WebSocket. Settings are persisted locally and include:
 
 - **Providers** - Select active STT and LLM providers from available options
 - **Audio** - Microphone selection, sound feedback, auto-mute during recording
@@ -337,7 +331,7 @@ Your prompts will be updated immediately. You can further customize them in **Se
 - **State Management:** Zustand, Tanstack Query, XState
 - **Backend:** Python, FastAPI
 - **Voice Pipeline:** Pipecat
-- **Communications:** WebRTC
+- **Communications:** WebSocket
 - **Validation:** Zod, Pydantic
 - **Code Quality:** Biome, Ruff, Ty, Clippy
 
