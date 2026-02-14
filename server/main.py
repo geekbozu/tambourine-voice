@@ -259,6 +259,7 @@ async def run_pipeline(
         # add_wav_header=False: Server doesn't need WAV headers for raw PCM audio streaming.
         # The client sends 16-bit PCM at 16kHz directly, which Pipecat processes natively.
         # WAV headers are only needed when writing to files or passing to non-PCM-aware systems.
+        # VAD is configured directly on the transport for WebSocket (FastAPIWebsocketParams supports it)
         transport = FastAPIWebsocketTransport(
             websocket=connection,
             params=FastAPIWebsocketParams(
@@ -272,7 +273,8 @@ async def run_pipeline(
         )
     else:
         # Initialize Pipecat transport with WebRTC
-        # (client connects with enableMic: false, only enables when recording starts)
+        # Note: TransportParams (base class) doesn't support VAD configuration.
+        # VAD is handled via VADFrameForwardingProcessor in the pipeline instead.
         transport = SmallWebRTCTransport(
             webrtc_connection=connection,
             params=TransportParams(
@@ -281,6 +283,8 @@ async def run_pipeline(
             ),
         )
 
+    # VAD frame forwarder is used in the pipeline for both transport types
+    # (WebSocket uses it in addition to transport-level VAD for frame forwarding)
     vad_frame_forwarder = VADFrameForwardingProcessor(vad_analyzer=vad_analyzer)
 
     # Create service switchers for this connection
@@ -650,8 +654,8 @@ async def webrtc_offer(
     async def connection_callback(connection: SmallWebRTCConnection) -> None:
         """Callback invoked when connection is ready - spawns the pipeline."""
         # Create fresh service instances for this connection to ensure isolation
-        # between concurrent clients. Each client gets independent WebSocket
-        # connections to STT/LLM providers.
+        # between concurrent clients. Each client gets independent network connections
+        # to STT/LLM providers (via their respective websocket-based APIs).
         # Uses pre-computed provider lists from AppServices to avoid redundant
         # iteration through all providers on every connection.
         vad_params = create_silero_vad_params(services.settings)
@@ -817,6 +821,8 @@ async def websocket_endpoint(websocket: WebSocket, request: Request) -> None:
     await websocket.accept()
 
     # Create fresh service instances for this connection to ensure isolation
+    # between concurrent clients. Each client gets independent network connections
+    # to STT/LLM providers (via their respective websocket-based APIs).
     vad_params = create_silero_vad_params(services.settings)
     vad_analyzer = SileroVADAnalyzer(params=vad_params)
     context_manager = DictationContextManager()
