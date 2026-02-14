@@ -189,8 +189,11 @@ export class WebSocketClient {
 		);
 
 		// Create processor node for capturing audio data
-		// Note: ScriptProcessorNode is deprecated but still widely used
-		// Could be replaced with AudioWorklet for better performance
+		// ScriptProcessorNode is deprecated, but AudioWorklet is more complex to set up
+		// and requires a separate worklet file. For this use case, ScriptProcessorNode
+		// works reliably across all platforms and browsers.
+		// TODO: Migrate to AudioWorklet for better performance and to avoid deprecation warnings
+		// See: https://developer.mozilla.org/en-US/docs/Web/API/AudioWorkletNode
 		const bufferSize = 4096;
 		this.audioProcessor = this.audioContext.createScriptProcessor(
 			bufferSize,
@@ -202,13 +205,19 @@ export class WebSocketClient {
 			const inputBuffer = event.inputBuffer;
 			const inputData = inputBuffer.getChannelData(0);
 
-			// Convert Float32Array to Int16Array for transmission
+			// Convert Float32 PCM to Int16 PCM for transmission
+			// Audio data from Web Audio API is Float32 in range [-1.0, 1.0]
+			// Server expects 16-bit signed integer PCM in range [-32768, 32767]
+			const MAX_INT16 = 0x7fff; // 32767 (maximum positive value)
+			const MIN_INT16_MAGNITUDE = 0x8000; // 32768 (magnitude for minimum negative value)
+
 			const pcmData = new Int16Array(inputData.length);
 			for (let i = 0; i < inputData.length; i++) {
-				// Clamp to [-1, 1] and convert to 16-bit PCM
+				// Clamp to [-1, 1] and convert to 16-bit signed integer
+				// Negative samples: multiply by 32768, positive samples: multiply by 32767
 				const sample = inputData[i] ?? 0;
 				const s = Math.max(-1, Math.min(1, sample));
-				pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+				pcmData[i] = s < 0 ? s * MIN_INT16_MAGNITUDE : s * MAX_INT16;
 			}
 
 			// Send audio data over WebSocket as binary
@@ -252,9 +261,13 @@ export class WebSocketClient {
 	 * Handle incoming WebSocket messages.
 	 */
 	private handleMessage(data: string | ArrayBuffer): void {
-		// Binary data could be audio from server (not used in current implementation)
+		// Binary data could be audio from server
 		if (data instanceof ArrayBuffer) {
-			// Ignore server audio for now
+			// Binary message - unexpected for dictation-only mode
+			// Server sends no audio back (audio_out_enabled=False), so log if we receive binary data
+			console.warn(
+				"[WebSocketClient] Received unexpected binary message from server",
+			);
 			return;
 		}
 

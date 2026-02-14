@@ -182,6 +182,10 @@ async def run_pipeline(
         f"params={vad_analyzer.params.model_dump(exclude_none=True)}"
     )
 
+    # Initialize Pipecat transport with WebSocket
+    # add_wav_header=False: Server doesn't need WAV headers for raw PCM audio streaming.
+    # The client sends 16-bit PCM at 16kHz directly, which Pipecat processes natively.
+    # WAV headers are only needed when writing to files or passing to non-PCM-aware systems.
     transport = FastAPIWebsocketTransport(
         websocket=websocket,
         params=FastAPIWebsocketParams(
@@ -492,12 +496,14 @@ async def websocket_endpoint(websocket: WebSocket, request: Request) -> None:
     # Require UUID - clients must register first
     if not client_uuid:
         logger.warning("Rejected connection without client UUID")
-        await reject_websocket(websocket, 1008, "Client UUID required. Please register first.")
+        # Use 1002 (Protocol Error) for missing required query parameter
+        await reject_websocket(websocket, 1002, "Client UUID required. Please register first.")
         return
 
     # Validate UUID is registered
     if not services.client_manager.is_registered(client_uuid):
         logger.warning(f"Rejected unregistered client UUID: {client_uuid}")
+        # Use 1008 (Policy Violation) for unregistered/invalid UUID
         await reject_websocket(websocket, 1008, "Unregistered client UUID. Please register first.")
         return
 
