@@ -210,7 +210,7 @@ class AppServices:
 
     The available_stt_providers and available_llm_providers lists are
     pre-computed at startup since Settings is immutable after initialization.
-    
+
     The webrtc_handler is only initialized when transport_type is "webrtc".
     """
 
@@ -280,7 +280,7 @@ async def run_pipeline(
                 audio_out_enabled=False,  # No audio output for dictation
             ),
         )
-    
+
     vad_frame_forwarder = VADFrameForwardingProcessor(vad_analyzer=vad_analyzer)
 
     # Create service switchers for this connection
@@ -917,13 +917,13 @@ def main(
     logger.success("Tambourine Server Ready!")
     logger.info("=" * 60)
     logger.info(f"Server endpoint: http://{effective_host}:{effective_port}")
-    
+
     # Log appropriate transport endpoints
     if settings.transport_type == "webrtc":
         logger.info(f"WebRTC offer endpoint: http://{effective_host}:{effective_port}/api/offer")
     else:
         logger.info(f"WebSocket endpoint: ws://{effective_host}:{effective_port}/ws")
-    
+
     logger.info(f"Config API endpoint: http://{effective_host}:{effective_port}/api/*")
     logger.info("Waiting for Tauri client connection...")
     logger.info("Press Ctrl+C to stop")

@@ -112,7 +112,7 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_settings(self) -> Self:
         """Validate settings including providers and transport type.
-        
+
         Uses the provider registry to dynamically check availability and
         generate error messages with current provider names.
         """
