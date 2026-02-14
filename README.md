@@ -90,21 +90,30 @@ Open-source alternative to [Wispr Flow](https://wisprflow.ai), [Superwhisper](ht
 │                      Tauri App (app/)                       │
 │  - Global hotkeys (Ctrl+Alt+Space, Ctrl+Alt+`)              │
 │  - Rust backend for keyboard and audio controls             │
-│  - React frontend with WebSocket client                     │
+│  - React frontend with WebRTC or WebSocket client           │
 │  - System tray with show/hide toggle                        │
 └─────────────────────────────┬───────────────────────────────┘
                               │
-                      WebSocket :8765/ws
+            WebRTC (HTTP :8765/api/offer) or WebSocket (:8765/ws)
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                  Python Server (server/)                    │
-│  - Pipecat FastAPI WebSocket transport                      │
+│  - Pipecat WebRTC or WebSocket transport (configurable)     │
 │  - STT providers (Cartesia, Deepgram, Groq, and more)       │
 │  - LLM formatting (Cerebras, OpenAI, Anthropic, and more)   │
-│  - Runtime config via WebSocket (RTVI protocol)             │
+│  - Runtime config via RTVI protocol                          │
 │  - Returns cleaned text to app                              │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+### Transport Options
+
+The server supports two transport types, configurable via the `TRANSPORT_TYPE` environment variable:
+
+- **WebRTC** (default): Peer-to-peer audio streaming with ICE/STUN for NAT traversal. Best for real-time audio quality.
+- **WebSocket**: Direct WebSocket connection on static port. Simpler deployment, works better behind restrictive firewalls.
+
+Set `TRANSPORT_TYPE=webrtc` or `TRANSPORT_TYPE=websocket` in your `.env` file.
 
 ## Prerequisites
 
@@ -214,6 +223,8 @@ uv run python main.py --verbose
 
 Run the server in Docker instead of installing Python dependencies locally.
 
+**Note:** When using WebRTC transport (`TRANSPORT_TYPE=webrtc`), you may need host networking for reliable NAT traversal. For WebSocket transport (`TRANSPORT_TYPE=websocket`), standard port mapping works.
+
 To use GPU acceleration for a locally hosted Whisper model, set up GPU access for your container daemon:
 
 https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html#installing-with-yum-or-dnf
@@ -224,6 +235,10 @@ cd server
 
 # Copy environment template and add your API keys
 cp .env.example .env
+
+# Set transport type (webrtc or websocket)
+# For WebSocket, no special networking needed
+echo "TRANSPORT_TYPE=websocket" >> .env
 
 # Build and start the container
 docker compose up --build -d
@@ -240,7 +255,10 @@ docker compose down && docker compose up --build -d
 
 The `.env` file is read at runtime (not baked into the image), so your API keys stay secure.
 
-The server uses standard port mapping (8765:8765) for WebSocket connections, making it simple to deploy in any environment without special networking requirements.
+**Transport-Specific Docker Configuration:**
+
+- **WebSocket mode** (recommended for Docker): Uses standard port mapping `8765:8765`. Simple and works everywhere.
+- **WebRTC mode**: May require `network_mode: "host"` in `docker-compose.yml` for reliable ICE/STUN NAT traversal on some networks. Comment out the `ports` section and uncomment `network_mode: "host"` if WebRTC connections fail.
 
 ## App Commands
 
@@ -257,11 +275,13 @@ pnpm build         # Build for current platform
 
 ## API Reference
 
-The server exposes HTTP and WebSocket endpoints on port 8765 (default). Key endpoints:
+The server exposes HTTP and WebSocket/WebRTC endpoints on port 8765 (default). Key endpoints:
 
 - `GET /health` - Health check for container orchestration
 - `GET /api/providers` - List available STT and LLM providers
-- `WS /ws` - WebSocket endpoint for audio streaming and RTVI protocol messages
+- `POST /api/offer` - WebRTC signaling endpoint (when `TRANSPORT_TYPE=webrtc`)
+- `PATCH /api/offer` - WebRTC ICE candidate endpoint (when `TRANSPORT_TYPE=webrtc`)
+- `WS /ws` - WebSocket endpoint for audio streaming (when `TRANSPORT_TYPE=websocket`)
 
 See `server/main.py` and `server/api/config_api.py` for all endpoints. All endpoints are rate-limited.
 
@@ -275,7 +295,12 @@ You can optionally configure Silero VAD parameters via environment variables (se
 
 ### App Configuration
 
-The app connects to `ws://127.0.0.1:8765/ws` by default via WebSocket. Settings are persisted locally and include:
+The app connects to the server on port 8765 by default. The transport type can be configured:
+
+- **WebRTC** (default): `http://127.0.0.1:8765` - Uses WebRTC for audio streaming
+- **WebSocket**: `ws://127.0.0.1:8765/ws` - Uses WebSocket for audio streaming
+
+Settings are persisted locally and include:
 
 - **Providers** - Select active STT and LLM providers from available options
 - **Audio** - Microphone selection, sound feedback, auto-mute during recording
@@ -331,7 +356,7 @@ Your prompts will be updated immediately. You can further customize them in **Se
 - **State Management:** Zustand, Tanstack Query, XState
 - **Backend:** Python, FastAPI
 - **Voice Pipeline:** Pipecat
-- **Communications:** WebSocket
+- **Communications:** WebRTC or WebSocket (configurable)
 - **Validation:** Zod, Pydantic
 - **Code Quality:** Biome, Ruff, Ty, Clippy
 

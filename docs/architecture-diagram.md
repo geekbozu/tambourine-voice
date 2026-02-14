@@ -38,6 +38,7 @@ flowchart LR
     end
 
     subgraph Server["Python Server"]
+        ServerWebRTC[WebRTC]
         ServerWebSocket[WebSocket]
         ServerREST[REST API]
         ServerPipeline[Pipecat pipeline]
@@ -57,8 +58,10 @@ flowchart LR
     TauriBridge --> RustStorage
     TauriBridge --> RustTypeText
     FrontendState --> FrontendClient
+    FrontendClient --> ServerWebRTC
     FrontendClient --> ServerWebSocket
     RustConfigSync --> ServerREST
+    ServerWebRTC --> ServerPipeline
     ServerWebSocket --> ServerPipeline
     ServerREST --> ServerPipeline
     FrontendProviderSwitch --> FrontendClient
@@ -81,11 +84,12 @@ flowchart LR
 | REST API config client       | Rust backend        | Python server                     | Rust-side client syncing runtime configuration to server. Uses `tauri-plugin-http` (`reqwest`).                                                  |
 | Main UI surfaces             | TypeScript frontend | Rust backend                      | User-facing windows and overlays. Built with React + Mantine rendered in Tauri WebView.                                                          |
 | Connection/recording state   | TypeScript frontend | Rust backend, Python server       | UX state orchestration for connect/disconnect and recording lifecycle. Uses XState + React hooks.                                                |
-| Pipecat client               | TypeScript frontend | Python server, Rust backend       | Realtime client connected to Python server via WebSocket. Uses custom WebSocketClient with RTVI protocol.                                        |
-| Provider selection           | TypeScript frontend | Python server                     | Selection initiated in UI and transmitted via WebSocket. Uses RTVI client messages over WebSocket.                                               |
+| Pipecat client               | TypeScript frontend | Python server, Rust backend       | Realtime client with configurable transport (WebRTC or WebSocket). Uses PipecatClient for WebRTC or custom WebSocketClient for WebSocket.    |
+| Provider selection           | TypeScript frontend | Python server                     | Selection initiated in UI and transmitted via RTVI protocol. Works with both WebRTC and WebSocket transports.                                 |
 | Prompt/settings configuration| TypeScript frontend | Rust backend, Python server       | Config edits flow: frontend → Tauri bridge → Rust REST client → server API. Uses React Query + Tauri invoke + FastAPI endpoints.                 |
 | Tauri bridge                 | Rust + TypeScript   | —                                 | Internal communication boundary between frontend and backend. Uses `@tauri-apps/api` (`invoke` for commands, `emit`/`listen` for events).        |
-| WebSocket                    | Python server       | TypeScript frontend               | Realtime voice streaming and control channel. Uses Pipecat FastAPIWebsocketTransport with RTVI protocol.                                         |
+| WebRTC                       | Python server       | TypeScript frontend               | Peer-to-peer audio streaming (when `TRANSPORT_TYPE=webrtc`). Uses Pipecat SmallWebRTC transport with FastAPI signaling endpoints.               |
+| WebSocket                    | Python server       | TypeScript frontend               | Direct WebSocket audio streaming (when `TRANSPORT_TYPE=websocket`). Uses Pipecat FastAPIWebsocketTransport with RTVI protocol.                 |
 | REST API                     | Python server       | Rust backend, TypeScript frontend | Configuration and metadata channel. Built with FastAPI + Pydantic request/response models.                                                       |
 | Pipecat pipeline             | Python server       | TypeScript frontend               | Stream/frame orchestration for dictation runtime. Uses Pipecat `Pipeline`, `PipelineTask`, and processor components.                             |
 | STT providers                | Model providers     | Python server                     | Speech-to-text inference backends. Integrates via Pipecat STT services (e.g., Whisper, Deepgram).                                                |
@@ -95,6 +99,9 @@ flowchart LR
 
 | Channel        | Direction                     | Purpose                                      | Technology Stack                                              |
 |----------------|-------------------------------|----------------------------------------------|---------------------------------------------------------------|
-| **WebSocket**  | Bidirectional (frontend ↔ server) | Realtime voice streaming and control signals | Pipecat FastAPIWebsocketTransport + native WebSocket client   |
+| **WebRTC**     | Bidirectional (frontend ↔ server) | Peer-to-peer audio streaming (when enabled)  | Pipecat SmallWebRTC transport + FastAPI signaling endpoints   |
+| **WebSocket**  | Bidirectional (frontend ↔ server) | Direct WebSocket audio streaming (when enabled) | Pipecat FastAPIWebsocketTransport + native WebSocket client   |
 | **REST API**   | Bidirectional (app ↔ server)     | Configuration sync and metadata exchange     | FastAPI + Pydantic + `tauri-plugin-http` (`reqwest`)          |
 | **Tauri bridge**| Bidirectional (frontend ↔ Rust)  | Internal app communication                   | `@tauri-apps/api` (`invoke` for commands, `emit`/`listen` for events) |
+
+**Note:** Only one transport (WebRTC or WebSocket) is active at a time, determined by the `TRANSPORT_TYPE` environment variable on the server and `transport_type` setting on the client.
