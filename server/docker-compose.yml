@@ -9,9 +9,8 @@ services:
         # Override at build-time to use a CUDA-enabled base when you want GPU support
         # Has to be 12.9.1 for Whisper
         BASE_IMAGE: ${BASE_IMAGE:-nvidia/cuda:12.9.1-cudnn-runtime-ubuntu24.04}
-    network_mode: "host" # Use host networking for WebRTC reliability
-    # Note: when using host mode the 'ports' mapping is ignored. Keep host
-    # networking when you need direct socket access for WebRTC (recommended).
+    ports:
+      - "8765:8765"  # WebSocket port for client connections
     env_file:
       - .env
     environment:
