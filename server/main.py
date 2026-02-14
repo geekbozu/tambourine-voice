@@ -10,9 +10,10 @@ Usage:
 """
 
 import asyncio
+from collections.abc import Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Annotated, Coroutine, cast
+from typing import Annotated, cast
 
 import typer
 import uvicorn
@@ -79,11 +80,34 @@ _background_tasks: set[asyncio.Task[None]] = set()
 
 
 def create_background_task(coroutine: Coroutine[object, object, None]) -> asyncio.Task[None]:
-    """Create a background task that won't be garbage collected before completion."""
+    """Create a background task that won't be garbage collected before completion.
+
+    Args:
+        coroutine: An awaitable coroutine to run as a background task
+
+    Returns:
+        The created asyncio Task
+    """
     task = asyncio.create_task(coroutine)
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
     return task
+
+
+async def reject_websocket(websocket: WebSocket, code: int, reason: str) -> None:
+    """Reject a WebSocket connection with a close code and reason.
+
+    Accepts the WebSocket first to establish the connection, then immediately
+    closes it with the given code and reason. This ensures the client receives
+    the close frame with the reason (RFC 6455 compliance).
+
+    Args:
+        websocket: The WebSocket connection to reject
+        code: The WebSocket close code (e.g., 1008 for policy violation)
+        reason: Human-readable reason for rejection
+    """
+    await websocket.accept()
+    await websocket.close(code=code, reason=reason)
 
 
 def create_silero_vad_params(settings: Settings) -> VADParams:
@@ -468,15 +492,13 @@ async def websocket_endpoint(websocket: WebSocket, request: Request) -> None:
     # Require UUID - clients must register first
     if not client_uuid:
         logger.warning("Rejected connection without client UUID")
-        await websocket.accept()
-        await websocket.close(code=1008, reason="Client UUID required. Please register first.")
+        await reject_websocket(websocket, 1008, "Client UUID required. Please register first.")
         return
 
     # Validate UUID is registered
     if not services.client_manager.is_registered(client_uuid):
         logger.warning(f"Rejected unregistered client UUID: {client_uuid}")
-        await websocket.accept()
-        await websocket.close(code=1008, reason="Unregistered client UUID. Please register first.")
+        await reject_websocket(websocket, 1008, "Unregistered client UUID. Please register first.")
         return
 
     # Handle existing connection with same UUID (one client = one connection)
