@@ -140,6 +140,12 @@ fn default_enabled() -> bool {
 fn default_disabled() -> bool {
     false
 }
+
+/// Default transport type is "webrtc" for backward compatibility
+fn default_transport_type() -> String {
+    "webrtc".to_string()
+}
+
 /// Configuration for a hotkey combination
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HotkeyConfig {
@@ -353,6 +359,8 @@ pub struct AppSettings {
     pub auto_mute_audio: bool,
     pub stt_timeout_seconds: Option<f64>,
     pub server_url: String,
+    #[serde(default = "default_transport_type")]
+    pub transport_type: String,
     #[serde(default = "default_enabled")]
     pub llm_formatting_enabled: bool,
     #[serde(default = "default_disabled")]
@@ -375,6 +383,7 @@ impl Default for AppSettings {
             auto_mute_audio: false,
             stt_timeout_seconds: None,
             server_url: DEFAULT_SERVER_URL.to_string(),
+            transport_type: "webrtc".to_string(),
             llm_formatting_enabled: true,
             llm_timeout_raw_fallback_enabled: false,
             send_active_app_context_enabled: false,
