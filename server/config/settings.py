@@ -123,7 +123,7 @@ class Settings(BaseSettings):
                 f"Invalid TRANSPORT_TYPE: '{self.transport_type}'. "
                 f"Must be one of: {', '.join(valid_transports)}"
             )
-        
+
         # Lazy import to avoid circular dependency (registry imports pipecat services)
         from services.provider_registry import LLM_PROVIDERS, STT_PROVIDERS
 

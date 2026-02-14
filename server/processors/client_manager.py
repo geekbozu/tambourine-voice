@@ -157,8 +157,14 @@ class ClientConnectionManager:
                 await connection_info.pipeline_task
 
         # Close the connection (WebSocket or WebRTC)
+        # WebSocket has close(), SmallWebRTCConnection has disconnect()
         try:
-            await connection_info.connection.close()
+            from fastapi import WebSocket
+
+            if isinstance(connection_info.connection, WebSocket):
+                await connection_info.connection.close()
+            else:
+                await connection_info.connection.disconnect()
         except Exception as error:
             logger.warning(f"Error closing old connection: {error}")
 

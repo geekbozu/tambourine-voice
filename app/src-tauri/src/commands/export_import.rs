@@ -502,6 +502,7 @@ fn serialized_value_for_setting_class(
             LocalOnlySetting::SoundEnabled => serde_json::to_value(app_settings.sound_enabled),
             LocalOnlySetting::AutoMuteAudio => serde_json::to_value(app_settings.auto_mute_audio),
             LocalOnlySetting::ServerUrl => serde_json::to_value(&app_settings.server_url),
+            LocalOnlySetting::TransportType => serde_json::to_value(&app_settings.transport_type),
             LocalOnlySetting::LlmTimeoutRawFallbackEnabled => {
                 serde_json::to_value(app_settings.llm_timeout_raw_fallback_enabled)
             }
