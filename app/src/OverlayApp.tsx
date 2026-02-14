@@ -29,8 +29,8 @@ import { useNativeAudioTrack } from "./hooks/useNativeAudioTrack";
 import type { ActiveAppContextSnapshot } from "./lib/activeAppContext";
 import { useAddHistoryEntry, useSettings, useTypeText } from "./lib/queries";
 import { safeSendClientMessage } from "./lib/safeSendClientMessage";
+import { RTVIEvent } from "./lib/TransportClient";
 import { tauriAPI } from "./lib/tauri";
-import { RTVIEvent } from "./lib/WebSocketClient";
 import type { ConnectionMachineStateValue } from "./machines/connectionMachine";
 import "./overlay-global.css";
 
@@ -512,8 +512,8 @@ function RecordingControl() {
 					throw new Error("Native audio track is unavailable");
 				}
 
-				// Start audio capture using WebSocketClient
-				await client.startAudioCapture(nativeAudioTrackForRecording);
+				// Start audio capture using WebSocketClient (no-op for WebRTC)
+				await client.startAudioCapture?.(nativeAudioTrackForRecording);
 
 				if (shouldIgnoreStartResults) {
 					return;
@@ -625,9 +625,9 @@ function RecordingControl() {
 
 		// Always stop audio capture, regardless of displayState
 		if (client) {
-			// Stop WebSocket audio capture
+			// Stop WebSocket audio capture (no-op for WebRTC)
 			try {
-				client.stopAudioCapture();
+				client.stopAudioCapture?.();
 				if (nativeAudioTrack) {
 					client.emit(
 						RTVIEvent.TrackStopped,

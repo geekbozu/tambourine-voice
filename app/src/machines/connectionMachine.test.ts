@@ -5,7 +5,8 @@ import {
 	fromCallback,
 	fromPromise,
 } from "xstate";
-import type { WebSocketClient } from "../lib/WebSocketClient";
+import type { TransportClient } from "../lib/TransportClient";
+import type { TransportType } from "../lib/tauri";
 import {
 	type ConnectionMachineStateValue,
 	connectionMachine,
@@ -105,7 +106,7 @@ function createTestMachine(config: {
 					return new Promise(() => {});
 				}
 				return {
-					client: { id: "mock-client" } as unknown as WebSocketClient,
+					client: { id: "mock-client" } as unknown as TransportClient,
 					clientUUID: "test-uuid-12345",
 				};
 			}),
@@ -175,7 +176,11 @@ describe("connectionMachine", () => {
 			const actor = createActor(machine);
 			actor.start();
 
-			actor.send({ type: "CONNECT", serverUrl: "http://localhost:8000" });
+			actor.send({
+				type: "CONNECT",
+				serverUrl: "http://localhost:8000",
+				transportType: "webrtc",
+			});
 
 			await waitForState(actor, "initializing");
 			expect(actor.getSnapshot().context.serverUrl).toBe(
@@ -211,7 +216,11 @@ describe("connectionMachine", () => {
 			const actor = createActor(machine);
 			actor.start();
 
-			actor.send({ type: "CONNECT", serverUrl: "http://localhost:8000" });
+			actor.send({
+				type: "CONNECT",
+				serverUrl: "http://localhost:8000",
+				transportType: "webrtc",
+			});
 
 			await waitForState(actor, "connecting");
 
@@ -230,7 +239,11 @@ describe("connectionMachine", () => {
 			const actor = createActor(machine);
 			actor.start();
 
-			actor.send({ type: "CONNECT", serverUrl: "http://localhost:8000" });
+			actor.send({
+				type: "CONNECT",
+				serverUrl: "http://localhost:8000",
+				transportType: "webrtc",
+			});
 
 			await waitForState(actor, "retrying");
 
@@ -256,7 +269,11 @@ describe("connectionMachine", () => {
 
 			actor.start();
 
-			actor.send({ type: "CONNECT", serverUrl: "http://localhost:8000" });
+			actor.send({
+				type: "CONNECT",
+				serverUrl: "http://localhost:8000",
+				transportType: "webrtc",
+			});
 			await waitForState(actor, "connecting");
 
 			callbacks.connectSendBack?.({ type: "CONNECTED" });
@@ -284,7 +301,11 @@ describe("connectionMachine", () => {
 			const actor = createActor(machine);
 			actor.start();
 
-			actor.send({ type: "CONNECT", serverUrl: "http://localhost:8000" });
+			actor.send({
+				type: "CONNECT",
+				serverUrl: "http://localhost:8000",
+				transportType: "webrtc",
+			});
 			await waitForState(actor, "connecting");
 
 			callbacks.connectSendBack?.({ type: "DISCONNECTED" });
@@ -310,7 +331,11 @@ describe("connectionMachine", () => {
 
 			actor.start();
 
-			actor.send({ type: "CONNECT", serverUrl: "http://localhost:8000" });
+			actor.send({
+				type: "CONNECT",
+				serverUrl: "http://localhost:8000",
+				transportType: "webrtc",
+			});
 			await waitForState(actor, "connecting");
 
 			const uuidBefore = actor.getSnapshot().context.clientUUID;
@@ -342,7 +367,11 @@ describe("connectionMachine", () => {
 			const actor = createActor(machine);
 			actor.start();
 
-			actor.send({ type: "CONNECT", serverUrl: "http://localhost:8000" });
+			actor.send({
+				type: "CONNECT",
+				serverUrl: "http://localhost:8000",
+				transportType: "webrtc",
+			});
 
 			// Advance through the createClient promise
 			await vi.advanceTimersByTimeAsync(0);
@@ -370,7 +399,11 @@ describe("connectionMachine", () => {
 			const actor = createActor(machine);
 			actor.start();
 
-			actor.send({ type: "CONNECT", serverUrl: "http://localhost:8000" });
+			actor.send({
+				type: "CONNECT",
+				serverUrl: "http://localhost:8000",
+				transportType: "webrtc",
+			});
 			await waitForState(actor, "connecting");
 			callbacks.connectSendBack?.({ type: "CONNECTED" });
 			await waitForState(actor, "idle");
@@ -447,7 +480,11 @@ describe("connectionMachine", () => {
 			const actor = createActor(machine);
 			actor.start();
 
-			actor.send({ type: "CONNECT", serverUrl: "http://localhost:8000" });
+			actor.send({
+				type: "CONNECT",
+				serverUrl: "http://localhost:8000",
+				transportType: "webrtc",
+			});
 			await waitForState(actor, "connecting");
 			callbacks.connectSendBack?.({ type: "CONNECTED" });
 			await waitForState(actor, "idle");
@@ -500,7 +537,11 @@ describe("connectionMachine", () => {
 			const actor = createActor(machine);
 			actor.start();
 
-			actor.send({ type: "CONNECT", serverUrl: "http://localhost:8000" });
+			actor.send({
+				type: "CONNECT",
+				serverUrl: "http://localhost:8000",
+				transportType: "webrtc",
+			});
 			await waitForState(actor, "connecting");
 			callbacks.connectSendBack?.({ type: "CONNECTED" });
 			await waitForState(actor, "idle");
@@ -548,7 +589,11 @@ describe("connectionMachine", () => {
 			const actor = createActor(machine);
 			actor.start();
 
-			actor.send({ type: "CONNECT", serverUrl: "http://localhost:8000" });
+			actor.send({
+				type: "CONNECT",
+				serverUrl: "http://localhost:8000",
+				transportType: "webrtc",
+			});
 			await waitForState(actor, "connecting");
 			callbacks.connectSendBack?.({ type: "CONNECTED" });
 			await waitForState(actor, "idle");
@@ -609,7 +654,11 @@ describe("connectionMachine", () => {
 
 			expect(actor.getSnapshot().context.retryCount).toBe(0);
 
-			actor.send({ type: "CONNECT", serverUrl: "http://localhost:8000" });
+			actor.send({
+				type: "CONNECT",
+				serverUrl: "http://localhost:8000",
+				transportType: "webrtc",
+			});
 			await waitForState(actor, "retrying");
 
 			expect(actor.getSnapshot().context.retryCount).toBe(1);
@@ -626,7 +675,11 @@ describe("connectionMachine", () => {
 			const actor = createActor(machine);
 			actor.start();
 
-			actor.send({ type: "CONNECT", serverUrl: "http://localhost:8000" });
+			actor.send({
+				type: "CONNECT",
+				serverUrl: "http://localhost:8000",
+				transportType: "webrtc",
+			});
 
 			await vi.advanceTimersByTimeAsync(0); // Let createClient fail
 			expect(actor.getSnapshot().value).toBe("retrying");
@@ -654,7 +707,11 @@ describe("connectionMachine", () => {
 			const actor = createActor(machine);
 			actor.start();
 
-			actor.send({ type: "CONNECT", serverUrl: "http://localhost:8000" });
+			actor.send({
+				type: "CONNECT",
+				serverUrl: "http://localhost:8000",
+				transportType: "webrtc",
+			});
 
 			// First failure
 			await vi.advanceTimersByTimeAsync(0);
@@ -690,7 +747,11 @@ describe("connectionMachine", () => {
 			const actor = createActor(machine);
 			actor.start();
 
-			actor.send({ type: "CONNECT", serverUrl: "http://localhost:8000" });
+			actor.send({
+				type: "CONNECT",
+				serverUrl: "http://localhost:8000",
+				transportType: "webrtc",
+			});
 
 			// First failure
 			await vi.advanceTimersByTimeAsync(0);
@@ -720,7 +781,11 @@ describe("connectionMachine", () => {
 			const actor = createActor(machine);
 			actor.start();
 
-			actor.send({ type: "CONNECT", serverUrl: "http://localhost:8000" });
+			actor.send({
+				type: "CONNECT",
+				serverUrl: "http://localhost:8000",
+				transportType: "webrtc",
+			});
 
 			// First failure puts us in retrying state
 			await vi.advanceTimersByTimeAsync(0);
@@ -772,8 +837,8 @@ describe("connectionMachine", () => {
 			const machine = connectionMachine.provide({
 				actors: {
 					createClient: fromPromise<
-						{ client: WebSocketClient; clientUUID: string },
-						{ serverUrl: string }
+						{ client: TransportClient; clientUUID: string },
+						{ serverUrl: string; transportType: TransportType }
 					>(async () => {
 						createAttempts++;
 						attemptTimes.push(Date.now());
@@ -796,7 +861,11 @@ describe("connectionMachine", () => {
 			const actor = createActor(machine);
 			actor.start();
 
-			actor.send({ type: "CONNECT", serverUrl: "http://localhost:8000" });
+			actor.send({
+				type: "CONNECT",
+				serverUrl: "http://localhost:8000",
+				transportType: "webrtc",
+			});
 
 			// First attempt
 			await vi.advanceTimersByTimeAsync(0);
@@ -831,7 +900,11 @@ describe("connectionMachine", () => {
 			const actor = createActor(machine);
 			actor.start();
 
-			actor.send({ type: "CONNECT", serverUrl: "http://localhost:8000" });
+			actor.send({
+				type: "CONNECT",
+				serverUrl: "http://localhost:8000",
+				transportType: "webrtc",
+			});
 			await vi.advanceTimersByTimeAsync(0);
 
 			expect(actor.getSnapshot().value).toBe("retrying");
@@ -860,7 +933,11 @@ describe("connectionMachine", () => {
 
 			expect(actor.getSnapshot().value).toBe("disconnected");
 
-			actor.send({ type: "CONNECT", serverUrl: "http://localhost:8000" });
+			actor.send({
+				type: "CONNECT",
+				serverUrl: "http://localhost:8000",
+				transportType: "webrtc",
+			});
 			await waitForState(actor, "connecting");
 
 			callbacks.connectSendBack?.({ type: "CONNECTED" });

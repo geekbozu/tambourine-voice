@@ -422,6 +422,8 @@ export interface CleanupPromptSections {
 	dictionary: PromptSection;
 }
 
+export type TransportType = "webrtc" | "websocket";
+
 export interface AppSettings {
 	toggle_hotkey: HotkeyConfig;
 	hold_hotkey: HotkeyConfig;
@@ -443,6 +445,8 @@ export interface AppSettings {
 	llm_timeout_raw_fallback_enabled: boolean;
 	/** Send active app context to server for prompt injection */
 	send_active_app_context_enabled: boolean;
+	/** Transport type: "webrtc" or "websocket" (default: "webrtc") */
+	transport_type: TransportType;
 }
 
 export const DEFAULT_SERVER_URL = "http://127.0.0.1:8765";

@@ -1,62 +1,23 @@
 /**
  * Custom WebSocket client for audio streaming and RTVI protocol communication.
- * Provides an event-based API compatible with PipecatClient for easy migration.
+ * Implements the unified TransportClient interface.
  */
 
 import type { BotLLMTextData, TranscriptData } from "@pipecat-ai/client-js";
-
-// Event types matching PipecatClient's RTVIEvent
-export const RTVIEvent = {
-	Connected: "connected",
-	Disconnected: "disconnected",
-	TransportStateChanged: "transportStateChanged",
-	UserTranscript: "userTranscript",
-	BotLlmStarted: "botLlmStarted",
-	BotLlmText: "botLlmText",
-	BotLlmStopped: "botLlmStopped",
-	ServerMessage: "serverMessage",
-	Error: "error",
-	DeviceError: "deviceError",
-	TrackStarted: "trackStarted",
-	TrackStopped: "trackStopped",
-} as const;
-
-export type RTVIEventType = (typeof RTVIEvent)[keyof typeof RTVIEvent];
-
-// Transport state enum
-type TransportState = "disconnected" | "connecting" | "connected" | "ready";
-
-// Event callback map
-type EventCallbackMap = {
-	[RTVIEvent.Connected]: () => void;
-	[RTVIEvent.Disconnected]: () => void;
-	[RTVIEvent.TransportStateChanged]: (state: string) => void;
-	[RTVIEvent.UserTranscript]: (data: TranscriptData) => void;
-	[RTVIEvent.BotLlmStarted]: () => void;
-	[RTVIEvent.BotLlmText]: (data: BotLLMTextData) => void;
-	[RTVIEvent.BotLlmStopped]: () => void;
-	[RTVIEvent.ServerMessage]: (message: unknown) => void;
-	[RTVIEvent.Error]: (error: unknown) => void;
-	[RTVIEvent.DeviceError]: (error: unknown) => void;
-	[RTVIEvent.TrackStarted]: (
-		track: MediaStreamTrack,
-		participant: { id: string; name: string; local: boolean },
-	) => void;
-	[RTVIEvent.TrackStopped]: (
-		track: MediaStreamTrack,
-		participant: { id: string; name: string; local: boolean },
-	) => void;
-};
-
-interface ConnectOptions {
-	websocketUrl: string;
-}
+import type {
+	ConnectOptions,
+	EventCallbackMap,
+	RTVIEventType,
+	TransportClient,
+	TransportState,
+} from "./TransportClient";
+import { isWebSocketConnectOptions, RTVIEvent } from "./TransportClient";
 
 /**
  * WebSocket client with Web Audio API for audio capture and streaming.
- * Compatible with PipecatClient's event-based API.
+ * Implements the unified TransportClient interface.
  */
-export class WebSocketClient {
+export class WebSocketClient implements TransportClient {
 	private ws: WebSocket | null = null;
 	private state: TransportState = "disconnected";
 	private eventListeners: Map<
@@ -96,6 +57,10 @@ export class WebSocketClient {
 	async connect(options: ConnectOptions): Promise<void> {
 		if (this.ws) {
 			throw new Error("Already connected or connecting");
+		}
+
+		if (!isWebSocketConnectOptions(options)) {
+			throw new Error("Invalid connect options for WebSocket client");
 		}
 
 		const { websocketUrl } = options;

@@ -2,8 +2,8 @@ import { useSelector } from "@xstate/react";
 import { createContext, type ReactNode, useContext, useEffect } from "react";
 import { match } from "ts-pattern";
 import { createActor } from "xstate";
+import type { TransportClient } from "../lib/TransportClient";
 import { tauriAPI } from "../lib/tauri";
-import type { WebSocketClient } from "../lib/WebSocketClient";
 import {
 	type ConnectionMachineActor,
 	type ConnectionMachineStateValue,
@@ -34,9 +34,11 @@ export function ConnectionProvider({ children }: ConnectionProviderProps) {
 	// Trigger initial connection on mount
 	useEffect(() => {
 		const initConnection = async () => {
-			const serverUrl = await tauriAPI.getServerUrl();
+			const settings = await tauriAPI.getSettings();
+			const serverUrl = settings.server_url;
+			const transportType = settings.transport_type || "webrtc"; // Default to webrtc
 			if (serverUrl) {
-				connectionActor.send({ type: "CONNECT", serverUrl });
+				connectionActor.send({ type: "CONNECT", serverUrl, transportType });
 			}
 		};
 
@@ -74,9 +76,11 @@ export function ConnectionProvider({ children }: ConnectionProviderProps) {
 
 		const subscribeToSettingsChanges = async () => {
 			const unsubscribeFn = await tauriAPI.onSettingsChanged(async () => {
-				const newServerUrl = await tauriAPI.getServerUrl();
+				const settings = await tauriAPI.getSettings();
+				const newServerUrl = settings.server_url;
+				const newTransportType = settings.transport_type || "webrtc";
 				const currentState = connectionActor.getSnapshot();
-				const shouldHandleUrlChange = match(
+				const shouldHandleChange = match(
 					currentState.value as ConnectionMachineStateValue,
 				)
 					.with(
@@ -92,12 +96,20 @@ export function ConnectionProvider({ children }: ConnectionProviderProps) {
 					.exhaustive();
 				const serverUrlChanged =
 					newServerUrl && newServerUrl !== currentState.context.serverUrl;
+				const transportTypeChanged =
+					newTransportType !== currentState.context.transportType;
 
-				if (shouldHandleUrlChange && serverUrlChanged) {
+				if (shouldHandleChange && serverUrlChanged) {
 					console.log("[XState] Server URL changed, reconnecting");
 					connectionActor.send({
 						type: "SERVER_URL_CHANGED",
 						serverUrl: newServerUrl,
+					});
+				} else if (shouldHandleChange && transportTypeChanged) {
+					console.log("[XState] Transport type changed, reconnecting");
+					connectionActor.send({
+						type: "TRANSPORT_TYPE_CHANGED",
+						transportType: newTransportType,
 					});
 				}
 			});
@@ -148,10 +160,10 @@ export function useConnectionState(): ConnectionMachineStateValue {
 }
 
 /**
- * Hook to get the current WebSocketClient instance.
+ * Hook to get the current TransportClient instance (WebRTC or WebSocket).
  * Returns null when not connected.
  */
-export function useConnectionClient(): WebSocketClient | null {
+export function useConnectionClient(): TransportClient | null {
 	const actor = useConnectionActor();
 	return useSelector(actor, (state) => state.context.client);
 }

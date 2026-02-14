@@ -15,17 +15,18 @@ import {
 	type ConfigMessage,
 	sendConfigMessages,
 } from "../lib/safeSendClientMessage";
+import type { TransportClient } from "../lib/TransportClient";
+import { RTVIEvent } from "../lib/TransportClient";
 import {
 	type ConnectionState,
 	configAPI,
+	type TransportType,
 	tauriAPI,
 	toLLMProviderSelection,
 	toSTTProviderSelection,
 } from "../lib/tauri";
-import {
-	WebSocketClient as PipecatClient,
-	RTVIEvent,
-} from "../lib/WebSocketClient";
+import { WebRTCClient } from "../lib/WebRTCClient";
+import { WebSocketClient } from "../lib/WebSocketClient";
 
 // Connection timing constants
 const CONNECTION_TIMEOUT_MS = 30000;
@@ -33,10 +34,10 @@ const INITIAL_RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 30000;
 
 /**
- * XState-based connection state machine for managing WebSocketClient lifecycle.
+ * XState-based connection state machine for managing TransportClient lifecycle.
  *
  * This machine handles:
- * - Initial connection establishment
+ * - Initial connection establishment with either WebRTC or WebSocket transport
  * - Automatic reconnection with exponential backoff
  * - Clean state transitions that prevent race conditions
  * - Proper cleanup of client resources
@@ -44,17 +45,18 @@ const MAX_RETRY_DELAY_MS = 30000;
 
 // Context type for the state machine
 interface ConnectionContext {
-	client: PipecatClient | null;
+	client: TransportClient | null;
 	clientUUID: string | null;
 	serverUrl: string;
+	transportType: TransportType;
 	retryCount: number;
 	error: string | null;
 }
 
 // Events that can be sent to the machine
 type ConnectionEvents =
-	| { type: "CONNECT"; serverUrl: string }
-	| { type: "CLIENT_READY"; client: PipecatClient }
+	| { type: "CONNECT"; serverUrl: string; transportType: TransportType }
+	| { type: "CLIENT_READY"; client: TransportClient }
 	| { type: "CLIENT_ERROR"; error: string }
 	| { type: "CONNECTED" }
 	| { type: "DISCONNECTED" }
@@ -65,15 +67,16 @@ type ConnectionEvents =
 	| { type: "STOP_RECORDING" }
 	| { type: "RESPONSE_RECEIVED" }
 	| { type: "SERVER_URL_CHANGED"; serverUrl: string }
+	| { type: "TRANSPORT_TYPE_CHANGED"; transportType: TransportType }
 	| { type: "COMMUNICATION_ERROR"; error: string }
 	| { type: "UUID_REJECTED" };
 
-// Actor that creates a fresh WebSocketClient instance and ensures UUID is registered
+// Actor that creates a fresh TransportClient instance (WebRTC or WebSocket) and ensures UUID is registered
 const createClientActor = fromPromise<
-	{ client: PipecatClient; clientUUID: string },
-	{ serverUrl: string }
+	{ client: TransportClient; clientUUID: string },
+	{ serverUrl: string; transportType: TransportType }
 >(async ({ input }) => {
-	const { serverUrl } = input;
+	const { serverUrl, transportType } = input;
 
 	// Ensure we have a registered UUID (register if needed, verify if exists)
 	let clientUUID = await tauriAPI.getClientUUID();
@@ -108,7 +111,9 @@ const createClientActor = fromPromise<
 		console.debug("[XState] Registered and stored new UUID:", clientUUID);
 	}
 
-	const client = new PipecatClient();
+	// Create the appropriate client based on transport type
+	const client: TransportClient =
+		transportType === "webrtc" ? new WebRTCClient() : new WebSocketClient();
 
 	await client.initDevices();
 
@@ -116,29 +121,44 @@ const createClientActor = fromPromise<
 });
 
 /**
- * Actor that initiates WebSocket connection and listens for state changes.
+ * Actor that initiates connection and listens for state changes.
  * Used ONLY in the 'connecting' state - calls client.connect().
  *
- * Waits for transport to reach "ready" state.
- * Passes clientUUID in the WebSocket URL for server-side client identification.
+ * For WebRTC:
+ * - Waits for transport to reach "ready" state (not just "connected")
+ * - sendClientMessage() requires the data channel which is only available in "ready" state
+ * - Connects to http://host:port/api/offer
+ *
+ * For WebSocket:
+ * - Waits for transport to reach "ready" state
+ * - Connects to ws://host:port/ws
+ *
+ * Passes clientUUID for server-side client identification.
  * Handles connection errors and triggers reconnection if needed.
  */
 const connectActor = fromCallback<
 	{ type: "CONNECTED" } | { type: "DISCONNECTED" } | { type: "UUID_REJECTED" },
-	{ client: PipecatClient; serverUrl: string; clientUUID: string }
+	{
+		client: TransportClient;
+		serverUrl: string;
+		clientUUID: string;
+		transportType: TransportType;
+	}
 >(({ sendBack, input }) => {
-	const { client, serverUrl, clientUUID } = input;
+	const { client, serverUrl, clientUUID, transportType } = input;
 
 	const handleTransportStateChanged = (state: string) => {
 		console.debug("[XState] Transport state changed:", state);
 		if (state === "ready") {
-			console.debug("[XState] WebSocketClient ready for messages");
+			console.debug(`[XState] ${transportType} client ready for messages`);
 			sendBack({ type: "CONNECTED" });
 		}
 	};
 
 	const handleDisconnected = () => {
-		console.debug("[XState] WebSocketClient disconnected (during connect)");
+		console.debug(
+			`[XState] ${transportType} client disconnected (during connect)`,
+		);
 		sendBack({ type: "DISCONNECTED" });
 	};
 
@@ -146,32 +166,68 @@ const connectActor = fromCallback<
 	client.on(RTVIEvent.TransportStateChanged, handleTransportStateChanged);
 	client.on(RTVIEvent.Disconnected, handleDisconnected);
 
-	// Construct WebSocket URL with clientUUID as query parameter
-	const wsUrl = joinURL(
-		serverUrl.replace(/^http/, "ws"),
-		`ws?clientUUID=${clientUUID}`,
-	);
-
-	// Start connection
-	client
-		.connect({
-			websocketUrl: wsUrl,
-		})
-		.catch((error: unknown) => {
-			console.error("[XState] Connection error:", error);
-
-			// Check if it's a 401 error (unregistered UUID)
-			const errorMessage =
-				error instanceof Error ? error.message : String(error);
-			if (errorMessage.includes("401")) {
-				console.warn(
-					"[XState] UUID rejected by server (401), will re-register",
+	// Connect based on transport type
+	if (transportType === "webrtc") {
+		// WebRTC: Connect to /api/offer with clientUUID in request data
+		client
+			.connect({
+				webrtcRequestParams: {
+					endpoint: joinURL(serverUrl, "api/offer"),
+					requestData: { clientUUID },
+				},
+			})
+			.catch((error: unknown) => {
+				console.error("[XState] WebRTC connection error:", error);
+				console.debug(
+					"[XState] Error details:",
+					JSON.stringify(error, Object.getOwnPropertyNames(error)),
 				);
-				sendBack({ type: "UUID_REJECTED" });
-				return;
-			}
-			// Other connection errors will eventually trigger a disconnect event
-		});
+
+				// Check for 401 (unregistered UUID) - server rejected our UUID
+				const httpError = error as {
+					response?: { status?: number };
+					status?: number;
+					message?: string;
+				};
+				const status = httpError?.response?.status ?? httpError?.status;
+				const is401 = status === 401 || httpError?.message?.includes("401");
+
+				if (is401) {
+					console.warn(
+						"[XState] UUID rejected by server (401), will re-register",
+					);
+					sendBack({ type: "UUID_REJECTED" });
+					return;
+				}
+				// Other connection errors will eventually trigger a disconnect event
+			});
+	} else {
+		// WebSocket: Connect to ws://host:port/ws with clientUUID as query parameter
+		const wsUrl = joinURL(
+			serverUrl.replace(/^http/, "ws"),
+			`ws?clientUUID=${clientUUID}`,
+		);
+
+		client
+			.connect({
+				websocketUrl: wsUrl,
+			})
+			.catch((error: unknown) => {
+				console.error("[XState] WebSocket connection error:", error);
+
+				// Check if it's a 401 error (unregistered UUID)
+				const errorMessage =
+					error instanceof Error ? error.message : String(error);
+				if (errorMessage.includes("401")) {
+					console.warn(
+						"[XState] UUID rejected by server (401), will re-register",
+					);
+					sendBack({ type: "UUID_REJECTED" });
+					return;
+				}
+				// Other connection errors will eventually trigger a disconnect event
+			});
+	}
 
 	// Cleanup function - remove event listeners when state exits
 	return () => {
@@ -188,12 +244,12 @@ const connectActor = fromCallback<
  */
 const disconnectListenerActor = fromCallback<
 	{ type: "DISCONNECTED" },
-	{ client: PipecatClient }
+	{ client: TransportClient }
 >(({ sendBack, input }) => {
 	const { client } = input;
 
 	const handleDisconnected = () => {
-		console.debug("[XState] WebSocketClient disconnected");
+		console.debug("[XState] TransportClient disconnected");
 		sendBack({ type: "DISCONNECTED" });
 	};
 
@@ -245,7 +301,7 @@ function getSettingNameFromProviderType(
  */
 const providerChangeListenerActor = fromCallback<
 	AnyEventObject, // Doesn't send events back to machine (but XState requires non-never type)
-	{ client: PipecatClient }
+	{ client: TransportClient }
 >(({ input }) => {
 	const { client } = input;
 
@@ -294,7 +350,7 @@ const providerChangeListenerActor = fromCallback<
  * Without this, a server restart causes the server to fall back to its defaults
  * because the providerChangeListenerActor only captures *future* user changes.
  */
-const initialConfigSyncActor = fromPromise<void, { client: PipecatClient }>(
+const initialConfigSyncActor = fromPromise<void, { client: TransportClient }>(
 	async ({ input }) => {
 		const { client } = input;
 
@@ -316,7 +372,7 @@ const initialConfigSyncActor = fromPromise<void, { client: PipecatClient }>(
 	},
 );
 
-function assertClient(context: ConnectionContext): PipecatClient {
+function assertClient(context: ConnectionContext): TransportClient {
 	if (!context.client) {
 		throw new Error(
 			"Invariant violation: context.client is null in a state that requires a connected client",
@@ -376,7 +432,9 @@ export const connectionMachine = setup({
 				return;
 			}
 
-			const clientWithOptionalEnableMic = context.client as PipecatClient & {
+			// WebRTC: Use enableMic if available
+			// WebSocket: No-op (mic control via startAudioCapture/stopAudioCapture)
+			const clientWithOptionalEnableMic = context.client as TransportClient & {
 				enableMic?: (enabled: boolean) => void;
 			};
 			if (typeof clientWithOptionalEnableMic.enableMic !== "function") {
@@ -386,10 +444,7 @@ export const connectionMachine = setup({
 			try {
 				clientWithOptionalEnableMic.enableMic(true);
 			} catch (error) {
-				console.warn(
-					"[Recording] Failed to enable Pipecat client microphone:",
-					error,
-				);
+				console.warn("[Recording] Failed to enable client microphone:", error);
 			}
 		},
 		disableClientMicrophoneAfterRecordingIfSupported: ({ context }): void => {
@@ -401,8 +456,37 @@ export const connectionMachine = setup({
 				return;
 			}
 
-			// No-op: WebSocketClient handles mic control differently
-			// Mic is controlled via startAudioCapture/stopAudioCapture
+			// WebRTC: Disable mic if available
+			// WebSocket: No-op (mic control via startAudioCapture/stopAudioCapture)
+			const clientWithOptionalMicControls =
+				context.client as TransportClient & {
+					enableMic?: (enabled: boolean) => void;
+					tracks?: () => {
+						local?: {
+							audio?: {
+								stop: () => void;
+							};
+						};
+					};
+				};
+
+			try {
+				clientWithOptionalMicControls.enableMic?.(false);
+			} catch (error) {
+				console.warn("[Recording] Failed to disable client microphone:", error);
+			}
+
+			try {
+				const tracks = clientWithOptionalMicControls.tracks?.();
+				if (tracks?.local?.audio) {
+					tracks.local.audio.stop();
+				}
+			} catch (error) {
+				console.warn(
+					"[Recording] Failed to stop client local audio track:",
+					error,
+				);
+			}
 		},
 	},
 	delays: {
@@ -421,6 +505,7 @@ export const connectionMachine = setup({
 		client: null,
 		clientUUID: null,
 		serverUrl: "",
+		transportType: "webrtc", // Default to WebRTC for backward compatibility
 		retryCount: 0,
 		error: null,
 	},
@@ -434,12 +519,15 @@ export const connectionMachine = setup({
 			on: {
 				CONNECT: {
 					target: "initializing",
-					actions: assign({ serverUrl: ({ event }) => event.serverUrl }),
+					actions: assign({
+						serverUrl: ({ event }) => event.serverUrl,
+						transportType: ({ event }) => event.transportType,
+					}),
 				},
 			},
 		},
 
-		// Create a fresh PipecatClient and ensure UUID is registered
+		// Create a fresh TransportClient and ensure UUID is registered
 		initializing: {
 			entry: [
 				{ type: "emitConnectionState", params: { state: "connecting" } },
@@ -447,7 +535,10 @@ export const connectionMachine = setup({
 			],
 			invoke: {
 				src: "createClient",
-				input: ({ context }) => ({ serverUrl: context.serverUrl }),
+				input: ({ context }) => ({
+					serverUrl: context.serverUrl,
+					transportType: context.transportType,
+				}),
 				onDone: {
 					target: "connecting",
 					actions: assign({
@@ -477,6 +568,7 @@ export const connectionMachine = setup({
 					client: assertClient(context),
 					serverUrl: context.serverUrl,
 					clientUUID: assertClientUUID(context),
+					transportType: context.transportType,
 				}),
 			},
 			on: {
@@ -551,6 +643,17 @@ export const connectionMachine = setup({
 						}),
 					],
 				},
+				TRANSPORT_TYPE_CHANGED: {
+					target: "initializing",
+					actions: [
+						"cleanupClient",
+						assign({
+							transportType: ({ event }) => event.transportType,
+							client: () => null,
+							retryCount: () => 0,
+						}),
+					],
+				},
 			},
 		},
 
@@ -593,6 +696,17 @@ export const connectionMachine = setup({
 						"cleanupClient",
 						assign({
 							serverUrl: ({ event }) => event.serverUrl,
+							client: () => null,
+							retryCount: () => 0,
+						}),
+					],
+				},
+				TRANSPORT_TYPE_CHANGED: {
+					target: "initializing",
+					actions: [
+						"cleanupClient",
+						assign({
+							transportType: ({ event }) => event.transportType,
 							client: () => null,
 							retryCount: () => 0,
 						}),
@@ -659,6 +773,18 @@ export const connectionMachine = setup({
 						"cleanupClient",
 						assign({
 							serverUrl: ({ event }) => event.serverUrl,
+							client: () => null,
+							retryCount: () => 0,
+						}),
+					],
+				},
+				TRANSPORT_TYPE_CHANGED: {
+					target: "initializing",
+					actions: [
+						"disableClientMicrophoneAfterRecordingIfSupported",
+						"cleanupClient",
+						assign({
+							transportType: ({ event }) => event.transportType,
 							client: () => null,
 							retryCount: () => 0,
 						}),
@@ -783,6 +909,13 @@ export const connectionMachine = setup({
 					target: "initializing",
 					actions: assign({
 						serverUrl: ({ event }) => event.serverUrl,
+						retryCount: () => 0,
+					}),
+				},
+				TRANSPORT_TYPE_CHANGED: {
+					target: "initializing",
+					actions: assign({
+						transportType: ({ event }) => event.transportType,
 						retryCount: () => 0,
 					}),
 				},
