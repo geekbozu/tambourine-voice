@@ -455,6 +455,22 @@ pub async fn update_server_url(_app: AppHandle, _url: String) -> Result<(), Stri
     Ok(())
 }
 
+/// Update transport type
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn update_transport_type(app: AppHandle, transport_type: String) -> Result<(), String> {
+    persist_local_only_setting(&app, LocalOnlySetting::TransportType, &transport_type)
+        .map_err(|error| format!("{error:#}"))?;
+    log::info!("Updated transport type: {transport_type}");
+    Ok(())
+}
+
+#[cfg(not(desktop))]
+#[tauri::command]
+pub async fn update_transport_type(_app: AppHandle, _transport_type: String) -> Result<(), String> {
+    Ok(())
+}
+
 /// Update LLM formatting enabled setting
 #[cfg(desktop)]
 #[tauri::command]

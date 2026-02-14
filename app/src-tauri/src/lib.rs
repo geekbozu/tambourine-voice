@@ -480,6 +480,7 @@ pub fn run() {
             commands::settings::update_auto_mute_audio,
             commands::settings::update_stt_timeout,
             commands::settings::update_server_url,
+            commands::settings::update_transport_type,
             commands::settings::update_llm_formatting_enabled,
             commands::settings::update_llm_timeout_raw_fallback_enabled,
             commands::settings::update_send_active_app_context_enabled,

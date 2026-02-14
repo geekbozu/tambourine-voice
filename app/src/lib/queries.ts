@@ -542,6 +542,24 @@ export function useUpdateSendActiveAppContextEnabled() {
 	});
 }
 
+// Transport type mutation
+export function useUpdateTransportType() {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: (transportType: "webrtc" | "websocket") =>
+			tauriAPI.updateTransportType(transportType),
+		onSuccess: () => {
+			queryClient.invalidateQueries({ queryKey: ["settings"] });
+			// Notify other windows about settings change
+			tauriAPI.emitSettingsChanged();
+			showSettingsSuccess("Transport type updated successfully");
+		},
+		onError: (error) => {
+			showSettingsError(`Failed to update transport type: ${error.message}`);
+		},
+	});
+}
+
 // =============================================================================
 // Provider Mutations with Server Confirmation
 // =============================================================================

@@ -603,6 +603,12 @@ export const tauriAPI = {
 		return invoke("update_server_url", { url });
 	},
 
+	async updateTransportType(
+		transportType: "webrtc" | "websocket",
+	): Promise<void> {
+		return invoke("update_transport_type", { transportType });
+	},
+
 	async updateLLMFormattingEnabled(enabled: boolean): Promise<void> {
 		return invoke("update_llm_formatting_enabled", { enabled });
 	},

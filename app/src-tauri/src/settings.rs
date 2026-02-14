@@ -40,6 +40,7 @@ pub enum LocalOnlySetting {
     SoundEnabled,
     AutoMuteAudio,
     ServerUrl,
+    TransportType,
     LlmTimeoutRawFallbackEnabled,
     SendActiveAppContextEnabled,
 }
@@ -54,6 +55,7 @@ impl LocalOnlySetting {
             Self::SoundEnabled => "sound_enabled",
             Self::AutoMuteAudio => "auto_mute_audio",
             Self::ServerUrl => "server_url",
+            Self::TransportType => "transport_type",
             Self::LlmTimeoutRawFallbackEnabled => "llm_timeout_raw_fallback_enabled",
             Self::SendActiveAppContextEnabled => "send_active_app_context_enabled",
         }

@@ -1,11 +1,22 @@
-import { ActionIcon, Button, Loader, TextInput, Tooltip } from "@mantine/core";
+import {
+	ActionIcon,
+	Button,
+	Loader,
+	Select,
+	TextInput,
+	Tooltip,
+} from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import ky from "ky";
 import { Check, Copy, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { match } from "ts-pattern";
 import { joinURL } from "ufo";
-import { useSettings, useUpdateServerUrl } from "../../lib/queries";
+import {
+	useSettings,
+	useUpdateServerUrl,
+	useUpdateTransportType,
+} from "../../lib/queries";
 import {
 	type ConnectionState,
 	DEFAULT_SERVER_URL,
@@ -30,6 +41,7 @@ const PING_STATUS_COLORS = {
 export function ConnectionSettings() {
 	const { data: settings, isLoading } = useSettings();
 	const updateServerUrl = useUpdateServerUrl();
+	const updateTransportType = useUpdateTransportType();
 	const [localUrl, setLocalUrl] = useState<string | null>(null);
 	const [pingStatus, setPingStatus] = useState<PingStatus>("idle");
 	const [clientUUID, setClientUUID] = useState<string | null>(null);
@@ -237,6 +249,43 @@ export function ConnectionSettings() {
 							<RefreshCw size={14} />
 						</ActionIcon>
 					</Tooltip>
+				</div>
+				<div
+					className="settings-row"
+					style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}
+				>
+					<div>
+						<div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+							<p className="settings-label" style={{ margin: 0 }}>
+								Transport Type
+							</p>
+							<StatusIndicator status={updateTransportType.status} />
+						</div>
+						<p className="settings-description">
+							Communication protocol for audio streaming. WebRTC offers optimal
+							real-time quality, WebSocket works better behind restrictive
+							firewalls.
+						</p>
+					</div>
+					<Select
+						value={settings?.transport_type ?? "webrtc"}
+						onChange={(value) => {
+							if (value) {
+								updateTransportType.mutate(value as "webrtc" | "websocket");
+							}
+						}}
+						data={[
+							{
+								value: "webrtc",
+								label: "WebRTC (Default)",
+							},
+							{
+								value: "websocket",
+								label: "WebSocket",
+							},
+						]}
+						disabled={isLoading || updateTransportType.isPending}
+					/>
 				</div>
 				<div
 					className="settings-row"
