@@ -16,9 +16,9 @@ from typing import TYPE_CHECKING
 from loguru import logger
 
 if TYPE_CHECKING:
+    from fastapi import WebSocket
     from pipecat.services.ai_services import STTService
     from pipecat.services.llm_service import LLMService
-    from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
 
     from processors.context_manager import DictationContextManager
     from processors.llm_gate import LLMGateFilter
@@ -31,7 +31,7 @@ class ConnectionInfo:
     """Information about an active client connection."""
 
     client_uuid: str
-    connection: "SmallWebRTCConnection"
+    connection: "WebSocket"
     pipeline_task: asyncio.Task[None]
     connected_at: datetime = field(default_factory=datetime.now)
     # Pipeline component references for HTTP API configuration
@@ -80,7 +80,7 @@ class ClientConnectionManager:
     def register_connection(
         self,
         client_uuid: str,
-        connection: "SmallWebRTCConnection",
+        connection: "WebSocket",
         pipeline_task: asyncio.Task[None],
         *,
         context_manager: "DictationContextManager | None" = None,
@@ -93,7 +93,7 @@ class ClientConnectionManager:
 
         Args:
             client_uuid: The client's UUID.
-            connection: The WebRTC connection.
+            connection: The WebSocket connection.
             pipeline_task: The pipeline task associated with this connection.
             context_manager: The DictationContextManager for this connection.
             turn_controller: The TurnController for this connection.
@@ -139,7 +139,7 @@ class ClientConnectionManager:
         return self._connections.pop(client_uuid, None)
 
     async def cleanup_connection(self, connection_info: ConnectionInfo) -> None:
-        """Clean up a disconnected connection (cancel task, close WebRTC).
+        """Clean up a disconnected connection (cancel task, close WebSocket).
 
         This operates on a specific ConnectionInfo object, not a UUID lookup,
         so it's safe to run in the background after take_existing_connection().
@@ -155,9 +155,9 @@ class ClientConnectionManager:
             with contextlib.suppress(asyncio.CancelledError):
                 await connection_info.pipeline_task
 
-        # Close the WebRTC connection
+        # Close the WebSocket connection
         try:
-            await connection_info.connection.disconnect()
+            await connection_info.connection.close()
         except Exception as error:
             logger.warning(f"Error closing old connection: {error}")
 

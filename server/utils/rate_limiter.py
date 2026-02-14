@@ -47,11 +47,8 @@ RATE_LIMIT_REGISTRATION = "100/hour"
 # Client verification: Prevent UUID enumeration attacks
 RATE_LIMIT_VERIFY = "120/minute"
 
-# WebRTC offer: Allow frequent reconnections
-RATE_LIMIT_OFFER = "120/minute"
-
-# ICE candidate patches: WebRTC can be very chatty during setup
-RATE_LIMIT_ICE = "500/minute"
+# WebSocket connection: Allow frequent reconnections
+RATE_LIMIT_WEBSOCKET = "120/minute"
 
 # Static config endpoints: Allow frequent polling
 RATE_LIMIT_CONFIG = "200/minute"
