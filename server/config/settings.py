@@ -90,6 +90,10 @@ class Settings(BaseSettings):
     # Server Configuration (optional, has defaults)
     host: str = Field("127.0.0.1", description="Host to bind the server to")
     port: int = Field(8765, description="Port to listen on")
+    transport_type: str = Field(
+        "webrtc",
+        description="Transport type to use: 'webrtc' or 'websocket' (default: webrtc)",
+    )
 
     # Silero VAD configuration (optional - leave unset to use library defaults)
     vad_confidence: float | None = Field(
@@ -106,12 +110,20 @@ class Settings(BaseSettings):
     )
 
     @model_validator(mode="after")
-    def validate_at_least_one_provider(self) -> Self:
-        """Validate that at least one STT and one LLM provider is configured.
-
+    def validate_settings(self) -> Self:
+        """Validate settings including providers and transport type.
+        
         Uses the provider registry to dynamically check availability and
         generate error messages with current provider names.
         """
+        # Validate transport type
+        valid_transports = ["webrtc", "websocket"]
+        if self.transport_type not in valid_transports:
+            raise ValueError(
+                f"Invalid TRANSPORT_TYPE: '{self.transport_type}'. "
+                f"Must be one of: {', '.join(valid_transports)}"
+            )
+        
         # Lazy import to avoid circular dependency (registry imports pipecat services)
         from services.provider_registry import LLM_PROVIDERS, STT_PROVIDERS
 

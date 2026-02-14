@@ -61,3 +61,9 @@ RATE_LIMIT_PROVIDERS = "200/minute"
 
 # Health endpoint: Allow frequent checks from orchestrators and load balancers
 RATE_LIMIT_HEALTH = "300/minute"
+
+# WebRTC offer endpoint: Allow frequent reconnections
+RATE_LIMIT_OFFER = "120/minute"
+
+# WebRTC ICE candidate endpoint: Allow rapid bursts during connection setup
+RATE_LIMIT_ICE = "500/minute"

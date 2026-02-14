@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Tambourine Server - WebSocket-based Pipecat Server.
+"""Tambourine Server - Multi-transport Pipecat Server.
 
-A FastAPI server that receives audio from a Tauri client via WebSocket,
+A FastAPI server that receives audio from a Tauri client via WebRTC or WebSocket,
 processes it through STT and LLM formatting, and returns formatted text.
+
+The transport type (WebRTC or WebSocket) is determined by the TRANSPORT_TYPE
+environment variable at startup.
 
 Usage:
     python main.py
@@ -10,10 +13,11 @@ Usage:
 """
 
 import asyncio
+import re
 from collections.abc import Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Annotated, cast
+from typing import Annotated, Final, cast
 
 import typer
 import uvicorn
@@ -32,6 +36,14 @@ from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.frameworks.rtvi import RTVIProcessor
 from pipecat.services.llm_service import LLMService
 from pipecat.services.stt_service import STTService
+from pipecat.transports.base_transport import TransportParams
+from pipecat.transports.smallwebrtc.connection import IceServer, SmallWebRTCConnection
+from pipecat.transports.smallwebrtc.request_handler import (
+    SmallWebRTCPatchRequest,
+    SmallWebRTCRequest,
+    SmallWebRTCRequestHandler,
+)
+from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 from pipecat.transports.websocket.fastapi import (
     FastAPIWebsocketParams,
     FastAPIWebsocketTransport,
@@ -68,11 +80,26 @@ from utils.logger import configure_logging
 from utils.observers import PipelineLogObserver
 from utils.rate_limiter import (
     RATE_LIMIT_HEALTH,
+    RATE_LIMIT_ICE,
+    RATE_LIMIT_OFFER,
     RATE_LIMIT_REGISTRATION,
     RATE_LIMIT_VERIFY,
     RATE_LIMIT_WEBSOCKET,
     get_ip_only,
     limiter,
+)
+
+# ICE servers for WebRTC NAT traversal
+ICE_SERVERS: Final[list[IceServer]] = [
+    IceServer(urls="stun:stun.l.google.com:19302"),
+]
+
+# Pattern to match mDNS ICE candidates in SDP (e.g., "abc123-def4.local")
+# These candidates only work for local network peers and cause aioice state
+# issues when resolution fails on cloud deployments.
+MDNS_CANDIDATE_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"^a=candidate:.*\s[a-f0-9-]+\.local\s.*$",
+    re.MULTILINE | re.IGNORECASE,
 )
 
 # Set to hold background tasks to prevent garbage collection before completion
@@ -92,6 +119,47 @@ def create_background_task(coroutine: Coroutine[object, object, None]) -> asynci
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
     return task
+
+
+def filter_mdns_candidates_from_sdp(sdp: str) -> str:
+    """Remove mDNS ICE candidates from SDP to prevent aioice resolution issues.
+
+    mDNS candidates (*.local addresses) are sent for privacy, but these
+    cannot be resolved on cloud servers (different network). The aioice library
+    accumulates stale state when mDNS resolution fails, causing subsequent
+    connections to fail with 'NoneType' has no attribute 'sendto'.
+
+    Filtering these candidates is safe because:
+    1. mDNS only works on local networks (same broadcast domain)
+    2. Client-to-cloud connections use srflx (STUN) candidates instead
+    3. Connection still works via server-reflexive candidates
+
+    Args:
+        sdp: The original SDP string from the client
+
+    Returns:
+        SDP with mDNS candidates removed
+    """
+    filtered_sdp = MDNS_CANDIDATE_PATTERN.sub("", sdp)
+    # Clean up any resulting blank lines
+    filtered_sdp = re.sub(r"\n{3,}", "\n\n", filtered_sdp)
+    return filtered_sdp
+
+
+def is_mdns_candidate(candidate: str) -> bool:
+    """Check if an ICE candidate string contains an mDNS address (.local).
+
+    mDNS candidates use UUIDs like: a8b3c4d5-e6f7-8901-2345-6789abcdef01.local
+    These only work on local networks and cause aioice state issues when
+    resolution fails on cloud servers.
+
+    Args:
+        candidate: The ICE candidate string (SDP a=candidate line content)
+
+    Returns:
+        True if this is an mDNS candidate, False otherwise
+    """
+    return bool(re.search(r"\s[a-f0-9-]+\.local\s", candidate, re.IGNORECASE))
 
 
 async def reject_websocket(websocket: WebSocket, code: int, reason: str) -> None:
@@ -142,6 +210,8 @@ class AppServices:
 
     The available_stt_providers and available_llm_providers lists are
     pre-computed at startup since Settings is immutable after initialization.
+    
+    The webrtc_handler is only initialized when transport_type is "webrtc".
     """
 
     settings: Settings
@@ -149,10 +219,11 @@ class AppServices:
     client_manager: ClientConnectionManager
     available_stt_providers: list[STTProviderId]
     available_llm_providers: list[LLMProviderId]
+    webrtc_handler: SmallWebRTCRequestHandler | None = None
 
 
 async def run_pipeline(
-    websocket: WebSocket,
+    connection: WebSocket | SmallWebRTCConnection,
     services: AppServices,
     *,
     stt_services: dict[STTProviderId, STTService],
@@ -162,10 +233,10 @@ async def run_pipeline(
     llm_gate: LLMGateFilter,
     vad_analyzer: SileroVADAnalyzer,
 ) -> None:
-    """Run the Pipecat pipeline for a single WebSocket connection.
+    """Run the Pipecat pipeline for a WebSocket or WebRTC connection.
 
     Args:
-        websocket: The WebSocket connection for this client
+        connection: The WebSocket or SmallWebRTCConnection for this client
         services: Application services container
         stt_services: Pre-created STT services for this connection
         llm_services: Pre-created LLM services for this connection
@@ -174,29 +245,42 @@ async def run_pipeline(
         llm_gate: Pre-created LLM gate filter for this connection
         vad_analyzer: Pre-created VAD analyzer for this connection
     """
-    logger.info("Starting pipeline for new WebSocket connection")
+    connection_type = "WebSocket" if isinstance(connection, WebSocket) else "WebRTC"
+    logger.info(f"Starting pipeline for new {connection_type} connection")
 
-    # Create transport using the WebSocket connection
+    # Create transport based on connection type
     logger.info(
         "SileroVADAnalyzer configured with "
         f"params={vad_analyzer.params.model_dump(exclude_none=True)}"
     )
 
-    # Initialize Pipecat transport with WebSocket
-    # add_wav_header=False: Server doesn't need WAV headers for raw PCM audio streaming.
-    # The client sends 16-bit PCM at 16kHz directly, which Pipecat processes natively.
-    # WAV headers are only needed when writing to files or passing to non-PCM-aware systems.
-    transport = FastAPIWebsocketTransport(
-        websocket=websocket,
-        params=FastAPIWebsocketParams(
-            audio_in_enabled=True,
-            audio_out_enabled=False,  # No audio output for dictation
-            add_wav_header=False,
-            vad_enabled=True,
-            vad_analyzer=vad_analyzer,
-            vad_audio_passthrough=True,
-        ),
-    )
+    if isinstance(connection, WebSocket):
+        # Initialize Pipecat transport with WebSocket
+        # add_wav_header=False: Server doesn't need WAV headers for raw PCM audio streaming.
+        # The client sends 16-bit PCM at 16kHz directly, which Pipecat processes natively.
+        # WAV headers are only needed when writing to files or passing to non-PCM-aware systems.
+        transport = FastAPIWebsocketTransport(
+            websocket=connection,
+            params=FastAPIWebsocketParams(
+                audio_in_enabled=True,
+                audio_out_enabled=False,  # No audio output for dictation
+                add_wav_header=False,
+                vad_enabled=True,
+                vad_analyzer=vad_analyzer,
+                vad_audio_passthrough=True,
+            ),
+        )
+    else:
+        # Initialize Pipecat transport with WebRTC
+        # (client connects with enableMic: false, only enables when recording starts)
+        transport = SmallWebRTCTransport(
+            webrtc_connection=connection,
+            params=TransportParams(
+                audio_in_enabled=True,
+                audio_out_enabled=False,  # No audio output for dictation
+            ),
+        )
+    
     vad_frame_forwarder = VADFrameForwardingProcessor(vad_analyzer=vad_analyzer)
 
     # Create service switchers for this connection
@@ -306,7 +390,7 @@ async def run_pipeline(
     # Set up event handlers
     @transport.event_handler("on_client_connected")
     async def on_client_connected(_transport: object, client: object) -> None:
-        logger.success(f"Client connected via WebSocket: {client}")
+        logger.success(f"Client connected via {connection_type}: {client}")
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(_transport: object, client: object) -> None:
@@ -345,12 +429,21 @@ def initialize_services(settings: Settings) -> AppServices | None:
     logger.info(f"Available STT providers: {[p.value for p in available_stt]}")
     logger.info(f"Available LLM providers: {[p.value for p in available_llm]}")
 
+    # Initialize WebRTC handler only if transport_type is "webrtc"
+    webrtc_handler = None
+    if settings.transport_type == "webrtc":
+        webrtc_handler = SmallWebRTCRequestHandler(ice_servers=ICE_SERVERS)
+        logger.info("WebRTC transport enabled")
+    else:
+        logger.info("WebSocket transport enabled")
+
     return AppServices(
         settings=settings,
         active_pipeline_tasks=set(),
         client_manager=ClientConnectionManager(),
         available_stt_providers=available_stt,
         available_llm_providers=available_llm,
+        webrtc_handler=webrtc_handler,
     )
 
 
@@ -378,6 +471,11 @@ async def lifespan(fastapi_app: FastAPI):  # noqa: ANN201
             logger.info("All pipeline tasks cancelled")
         except TimeoutError:
             logger.warning("Timeout waiting for pipeline tasks to cancel")
+
+    # Clean up WebRTC handler if using WebRTC transport
+    if services.webrtc_handler is not None:
+        await services.webrtc_handler.close()
+        logger.info("WebRTC handler closed")
 
     logger.success("All connections cleaned up")
 
@@ -469,6 +567,198 @@ async def verify_client(client_uuid: str, request: Request) -> dict[str, bool]:
 
 
 # =============================================================================
+# WebRTC Endpoints
+# =============================================================================
+
+
+@app.post("/api/offer")
+@limiter.limit(RATE_LIMIT_OFFER, key_func=get_ip_only)
+async def webrtc_offer(
+    request: Request,
+) -> dict[str, str] | None:
+    """Handle WebRTC offer from client using SmallWebRTCRequestHandler.
+
+    This endpoint handles the WebRTC signaling handshake:
+    1. Receives SDP offer from client (filtering mDNS candidates)
+    2. Validates client UUID from request_data (rejects unregistered UUIDs)
+    3. Disconnects any existing connection with the same UUID
+    4. Creates or reuses a SmallWebRTCConnection via the handler
+    5. Returns SDP answer to client
+    6. Spawns the Pipecat pipeline as a background task
+
+    Rate limited by IP. Normal client usage (reconnecting occasionally) won't
+    hit the limit, but attackers spamming connection attempts will be blocked.
+    """
+    services: AppServices = request.app.state.services
+
+    # Verify WebRTC is enabled
+    if services.webrtc_handler is None:
+        raise HTTPException(
+            status_code=501,
+            detail="WebRTC transport is not enabled. Set TRANSPORT_TYPE=webrtc in .env",
+        )
+
+    # Parse request body using from_dict to handle camelCase requestData field
+    # FastAPI's auto-parsing doesn't use the classmethod that handles the conversion
+    request_body = await request.json()
+    webrtc_request = SmallWebRTCRequest.from_dict(request_body)
+
+    # Extract client UUID from request_data
+    client_uuid: str | None = None
+    if webrtc_request.request_data:
+        client_uuid = webrtc_request.request_data.get("clientUUID")
+    logger.info(f"Incoming client UUID: {client_uuid}")
+
+    # Require UUID - clients must register first
+    if not client_uuid:
+        logger.warning("Rejected connection without client UUID")
+        raise HTTPException(
+            status_code=401,
+            detail="Client UUID required. Please register first.",
+        )
+
+    # Validate UUID is registered
+    if not services.client_manager.is_registered(client_uuid):
+        logger.warning(f"Rejected unregistered client UUID: {client_uuid}")
+        raise HTTPException(
+            status_code=401,
+            detail="Unregistered client UUID. Please register first.",
+        )
+
+    # Handle existing connection with same UUID (one client = one connection)
+    # 1. Synchronously remove old connection from tracking (frees UUID slot immediately)
+    # 2. Clean up old connection in background (non-blocking)
+    # This avoids the race condition where background cleanup accidentally kills new connection
+    old_connection = services.client_manager.take_existing_connection(client_uuid)
+    if old_connection:
+        create_background_task(services.client_manager.cleanup_connection(old_connection))
+    logger.info(f"Client connecting with UUID: {client_uuid}")
+
+    # Filter mDNS candidates from SDP to prevent aioice resolution issues.
+    # See filter_mdns_candidates_from_sdp() docstring for details.
+    filtered_sdp = filter_mdns_candidates_from_sdp(webrtc_request.sdp)
+    if filtered_sdp != webrtc_request.sdp:
+        logger.info("Filtered mDNS candidates from SDP offer")
+        webrtc_request = SmallWebRTCRequest(
+            sdp=filtered_sdp,
+            type=webrtc_request.type,
+            pc_id=webrtc_request.pc_id,
+            restart_pc=webrtc_request.restart_pc,
+            request_data=webrtc_request.request_data,
+        )
+
+    async def connection_callback(connection: SmallWebRTCConnection) -> None:
+        """Callback invoked when connection is ready - spawns the pipeline."""
+        # Create fresh service instances for this connection to ensure isolation
+        # between concurrent clients. Each client gets independent WebSocket
+        # connections to STT/LLM providers.
+        # Uses pre-computed provider lists from AppServices to avoid redundant
+        # iteration through all providers on every connection.
+        vad_params = create_silero_vad_params(services.settings)
+        vad_analyzer = SileroVADAnalyzer(params=vad_params)
+        context_manager = DictationContextManager()
+        logger.info(
+            "SileroVADAnalyzer configured with "
+            f"params={vad_analyzer.params.model_dump(exclude_none=True)}"
+        )
+        stt_services = create_all_available_stt_services(
+            services.settings,
+            services.available_stt_providers,
+        )
+        llm_services = create_all_available_llm_services(
+            services.settings,
+            services.available_llm_providers,
+        )
+
+        # Create pipeline processors
+        turn_controller = TurnController()
+        llm_gate = LLMGateFilter()
+        # Wire up turn controller to context manager for context reset coordination
+        turn_controller.set_context_manager(context_manager)
+
+        task = asyncio.create_task(
+            run_pipeline(
+                connection,
+                services,
+                stt_services=stt_services,
+                llm_services=llm_services,
+                context_manager=context_manager,
+                turn_controller=turn_controller,
+                llm_gate=llm_gate,
+                vad_analyzer=vad_analyzer,
+            )
+        )
+        services.active_pipeline_tasks.add(task)
+        task.add_done_callback(services.active_pipeline_tasks.discard)
+
+        # Track connection by UUID with component references for HTTP API access
+        services.client_manager.register_connection(
+            client_uuid,
+            connection,
+            task,
+            context_manager=context_manager,
+            turn_controller=turn_controller,
+            llm_gate=llm_gate,
+            stt_services=stt_services,
+            llm_services=llm_services,
+        )
+
+    answer = await services.webrtc_handler.handle_web_request(
+        request=webrtc_request,
+        webrtc_connection_callback=connection_callback,
+    )
+
+    return answer
+
+
+@app.patch("/api/offer")
+@limiter.limit(RATE_LIMIT_ICE, key_func=get_ip_only)
+async def webrtc_ice_candidate(
+    patch_request: SmallWebRTCPatchRequest,
+    request: Request,
+) -> dict[str, str]:
+    """Handle ICE candidate patches for WebRTC connections.
+
+    Filters mDNS ICE candidates sent via ICE trickle to prevent aioice
+    resolution issues. mDNS candidates (.local addresses) are sent
+    for privacy, but these cause state accumulation issues in aioice.
+
+    Rate limited with a high threshold as ICE candidates come in rapid
+    bursts during WebRTC connection setup.
+    """
+    services: AppServices = request.app.state.services
+
+    # Verify WebRTC is enabled
+    if services.webrtc_handler is None:
+        raise HTTPException(
+            status_code=501,
+            detail="WebRTC transport is not enabled. Set TRANSPORT_TYPE=webrtc in .env",
+        )
+
+    # Filter out mDNS candidates to prevent aioice resolution issues
+    # macOS WebKit sends mDNS candidates via ICE trickle (not in SDP offer)
+    if patch_request.candidates:
+        original_count = len(patch_request.candidates)
+        filtered_candidates = [
+            c for c in patch_request.candidates if not is_mdns_candidate(c.candidate)
+        ]
+        filtered_count = original_count - len(filtered_candidates)
+
+        if filtered_count > 0:
+            logger.info(f"Filtered {filtered_count} mDNS ICE candidates from trickle")
+            patch_request = SmallWebRTCPatchRequest(
+                pc_id=patch_request.pc_id,
+                candidates=filtered_candidates,
+            )
+
+    # Only process if we have candidates remaining after filtering
+    if patch_request.candidates:
+        await services.webrtc_handler.handle_patch_request(patch_request)
+
+    return {"status": "success"}
+
+
+# =============================================================================
 # WebSocket Endpoint
 # =============================================================================
 
@@ -488,6 +778,16 @@ async def websocket_endpoint(websocket: WebSocket, request: Request) -> None:
     but attackers spamming connection attempts will be blocked.
     """
     services: AppServices = request.app.state.services
+
+    # Verify WebSocket is enabled
+    if services.settings.transport_type != "websocket":
+        logger.warning("WebSocket connection attempted but WebSocket transport is not enabled")
+        await reject_websocket(
+            websocket,
+            1008,
+            "WebSocket transport is not enabled. Set TRANSPORT_TYPE=websocket in .env",
+        )
+        return
 
     # Extract client UUID from query parameters
     client_uuid = websocket.query_params.get("clientUUID")
@@ -617,7 +917,13 @@ def main(
     logger.success("Tambourine Server Ready!")
     logger.info("=" * 60)
     logger.info(f"Server endpoint: http://{effective_host}:{effective_port}")
-    logger.info(f"WebSocket endpoint: ws://{effective_host}:{effective_port}/ws")
+    
+    # Log appropriate transport endpoints
+    if settings.transport_type == "webrtc":
+        logger.info(f"WebRTC offer endpoint: http://{effective_host}:{effective_port}/api/offer")
+    else:
+        logger.info(f"WebSocket endpoint: ws://{effective_host}:{effective_port}/ws")
+    
     logger.info(f"Config API endpoint: http://{effective_host}:{effective_port}/api/*")
     logger.info("Waiting for Tauri client connection...")
     logger.info("Press Ctrl+C to stop")
