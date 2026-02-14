@@ -1,5 +1,3 @@
-import { PipecatClient, RTVIEvent } from "@pipecat-ai/client-js";
-import { SmallWebRTCTransport } from "@pipecat-ai/small-webrtc-transport";
 import { match } from "ts-pattern";
 import { joinURL } from "ufo";
 import {
@@ -24,6 +22,10 @@ import {
 	toLLMProviderSelection,
 	toSTTProviderSelection,
 } from "../lib/tauri";
+import {
+	WebSocketClient as PipecatClient,
+	RTVIEvent,
+} from "../lib/WebSocketClient";
 
 // Connection timing constants
 const CONNECTION_TIMEOUT_MS = 30000;
@@ -31,19 +33,7 @@ const INITIAL_RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 30000;
 
 /**
- * Clears the transport's keepAliveInterval to prevent "InvalidStateError" spam.
- * The library's stop() has a bug where the interval isn't cleared on abrupt disconnects.
- */
-function clearKeepAliveInterval(client: PipecatClient): void {
-	const transport = client.transport as { keepAliveInterval?: NodeJS.Timeout };
-	if (transport?.keepAliveInterval) {
-		clearInterval(transport.keepAliveInterval);
-		transport.keepAliveInterval = undefined;
-	}
-}
-
-/**
- * XState-based connection state machine for managing PipecatClient lifecycle.
+ * XState-based connection state machine for managing WebSocketClient lifecycle.
  *
  * This machine handles:
  * - Initial connection establishment
@@ -78,7 +68,7 @@ type ConnectionEvents =
 	| { type: "COMMUNICATION_ERROR"; error: string }
 	| { type: "UUID_REJECTED" };
 
-// Actor that creates a fresh PipecatClient instance and ensures UUID is registered
+// Actor that creates a fresh WebSocketClient instance and ensures UUID is registered
 const createClientActor = fromPromise<
 	{ client: PipecatClient; clientUUID: string },
 	{ serverUrl: string }
@@ -118,41 +108,20 @@ const createClientActor = fromPromise<
 		console.debug("[XState] Registered and stored new UUID:", clientUUID);
 	}
 
-	const transport = new SmallWebRTCTransport({
-		iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-	});
-	const client = new PipecatClient({
-		transport,
-		enableMic: false,
-		enableCam: false,
-	});
+	const client = new PipecatClient();
 
 	await client.initDevices();
-
-	// Release mic after device enumeration to avoid keeping it open
-	try {
-		const tracks = client.tracks();
-		if (tracks?.local?.audio) {
-			tracks.local.audio.stop();
-		}
-	} catch {
-		// Ignore cleanup errors
-	}
 
 	return { client, clientUUID };
 });
 
 /**
- * Actor that initiates connection and listens for transport state changes.
+ * Actor that initiates WebSocket connection and listens for state changes.
  * Used ONLY in the 'connecting' state - calls client.connect().
  *
- * Waits for transport to reach "ready" state (not just "connected") because:
- * - RTVIEvent.Connected fires when WebRTC connection is established ("connected" state)
- * - sendClientMessage() requires the data channel which is only available in "ready" state
- * - This gap caused "transport not in ready state" errors
- *
- * Passes clientUUID in requestData for server-side client identification.
- * Handles 401 errors (unregistered UUID) by sending UUID_REJECTED event.
+ * Waits for transport to reach "ready" state.
+ * Passes clientUUID in the WebSocket URL for server-side client identification.
+ * Handles connection errors and triggers reconnection if needed.
  */
 const connectActor = fromCallback<
 	{ type: "CONNECTED" } | { type: "DISCONNECTED" } | { type: "UUID_REJECTED" },
@@ -163,47 +132,38 @@ const connectActor = fromCallback<
 	const handleTransportStateChanged = (state: string) => {
 		console.debug("[XState] Transport state changed:", state);
 		if (state === "ready") {
-			console.debug("[XState] PipecatClient ready for messages");
+			console.debug("[XState] WebSocketClient ready for messages");
 			sendBack({ type: "CONNECTED" });
 		}
 	};
 
 	const handleDisconnected = () => {
-		console.debug("[XState] PipecatClient disconnected (during connect)");
+		console.debug("[XState] WebSocketClient disconnected (during connect)");
 		sendBack({ type: "DISCONNECTED" });
 	};
 
-	// Subscribe to transport state changes (not just Connected event)
-	// This ensures we wait for "ready" state before transitioning to idle
+	// Subscribe to transport state changes and disconnection events
 	client.on(RTVIEvent.TransportStateChanged, handleTransportStateChanged);
 	client.on(RTVIEvent.Disconnected, handleDisconnected);
 
-	// Start connection with clientUUID in requestData
+	// Construct WebSocket URL with clientUUID as query parameter
+	const wsUrl = joinURL(
+		serverUrl.replace(/^http/, "ws"),
+		`ws?clientUUID=${clientUUID}`,
+	);
+
+	// Start connection
 	client
 		.connect({
-			webrtcRequestParams: {
-				endpoint: joinURL(serverUrl, "api/offer"),
-				requestData: { clientUUID },
-			},
+			websocketUrl: wsUrl,
 		})
 		.catch((error: unknown) => {
 			console.error("[XState] Connection error:", error);
-			console.debug(
-				"[XState] Error details:",
-				JSON.stringify(error, Object.getOwnPropertyNames(error)),
-			);
 
-			// Check for 401 (unregistered UUID) - server rejected our UUID
-			// Try multiple error formats as different HTTP libraries structure errors differently
-			const httpError = error as {
-				response?: { status?: number };
-				status?: number;
-				message?: string;
-			};
-			const status = httpError?.response?.status ?? httpError?.status;
-			const is401 = status === 401 || httpError?.message?.includes("401");
-
-			if (is401) {
+			// Check if it's a 401 error (unregistered UUID)
+			const errorMessage =
+				error instanceof Error ? error.message : String(error);
+			if (errorMessage.includes("401")) {
 				console.warn(
 					"[XState] UUID rejected by server (401), will re-register",
 				);
@@ -224,11 +184,7 @@ const connectActor = fromCallback<
  * Actor that listens for disconnect events and transport state degradation.
  * Used in connected runtime states where a client is active to detect:
  * - Server disconnection (RTVIEvent.Disconnected)
- * - Stale connections after sleep/wake (transport state drops from "ready")
- *
- * WebRTC connections often become stale during system sleep but may not fire
- * clean disconnect events. By monitoring transport state, we can detect when
- * the connection degrades and trigger reconnection proactively.
+ * - Stale connections (transport state drops from "ready")
  */
 const disconnectListenerActor = fromCallback<
 	{ type: "DISCONNECTED" },
@@ -237,7 +193,7 @@ const disconnectListenerActor = fromCallback<
 	const { client } = input;
 
 	const handleDisconnected = () => {
-		console.debug("[XState] PipecatClient disconnected");
+		console.debug("[XState] WebSocketClient disconnected");
 		sendBack({ type: "DISCONNECTED" });
 	};
 
@@ -250,42 +206,14 @@ const disconnectListenerActor = fromCallback<
 		}
 	};
 
-	// Monitor peer connection state for data channel errors
-	// RTCDataChannel failures during processing may not trigger RTVI events,
-	// but they will cause the peer connection state to change to "failed" or "disconnected"
-	const transport = client.transport as SmallWebRTCTransport;
-	const peerConnection = (transport as unknown as { pc?: RTCPeerConnection })
-		.pc;
-
-	const handleConnectionStateChange = () => {
-		if (!peerConnection) return;
-		const state = peerConnection.connectionState;
-		console.debug("[XState] Peer connection state:", state);
-
-		if (state === "failed" || state === "disconnected") {
-			console.warn(
-				"[XState] Peer connection failed/disconnected, triggering reconnection",
-			);
-			sendBack({ type: "DISCONNECTED" });
-		}
-	};
-
-	// Subscribe to disconnect, transport state changes, and peer connection state
+	// Subscribe to disconnect and transport state changes
 	client.on(RTVIEvent.Disconnected, handleDisconnected);
 	client.on(RTVIEvent.TransportStateChanged, handleTransportStateChanged);
-	peerConnection?.addEventListener(
-		"connectionstatechange",
-		handleConnectionStateChange,
-	);
 
 	// Cleanup function
 	return () => {
 		client.off(RTVIEvent.Disconnected, handleDisconnected);
 		client.off(RTVIEvent.TransportStateChanged, handleTransportStateChanged);
-		peerConnection?.removeEventListener(
-			"connectionstatechange",
-			handleConnectionStateChange,
-		);
 	};
 });
 
@@ -434,9 +362,6 @@ export const connectionMachine = setup({
 		},
 		cleanupClient: ({ context }): void => {
 			if (!context.client) return;
-			// Clear the keepAliveInterval manually since the library's cleanup is buggy
-			// (the "close" event never fires when the PC is already dead)
-			clearKeepAliveInterval(context.client);
 			context.client.disconnect().catch(() => {});
 		},
 		logState: (_, params: { state: string }): void => {
@@ -476,34 +401,8 @@ export const connectionMachine = setup({
 				return;
 			}
 
-			const clientWithOptionalMicControls = context.client as PipecatClient & {
-				enableMic?: (enabled: boolean) => void;
-				tracks?: () => {
-					local?: {
-						audio?: {
-							stop: () => void;
-						};
-					};
-				};
-			};
-
-			try {
-				clientWithOptionalMicControls.enableMic?.(false);
-			} catch (error) {
-				console.warn(
-					"[Recording] Failed to disable Pipecat client microphone:",
-					error,
-				);
-			}
-
-			try {
-				clientWithOptionalMicControls.tracks?.().local?.audio?.stop();
-			} catch (error) {
-				console.warn(
-					"[Recording] Failed to stop Pipecat client local audio track:",
-					error,
-				);
-			}
+			// No-op: WebSocketClient handles mic control differently
+			// Mic is controlled via startAudioCapture/stopAudioCapture
 		},
 	},
 	delays: {

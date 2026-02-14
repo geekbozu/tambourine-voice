@@ -1,7 +1,6 @@
-import type { PipecatClient } from "@pipecat-ai/client-js";
-import type { SmallWebRTCTransport } from "@pipecat-ai/small-webrtc-transport";
 import { match } from "ts-pattern";
 import type { LLMProviderSelection, STTProviderSelection } from "./tauri";
+import type { WebSocketClient as PipecatClient } from "./WebSocketClient";
 
 // Discriminated union for type-safe config messages
 // Only provider switching uses RTVI (requires frame injection into pipeline)
@@ -58,7 +57,7 @@ export function matchSendResult<T>(
 }
 
 /**
- * Safely sends a message through the PipecatClient, detecting failures
+ * Safely sends a message through the WebSocketClient, detecting failures
  * that should trigger reconnection.
  *
  * This wrapper provides:
@@ -70,13 +69,18 @@ export function matchSendResult<T>(
  * silent failure would leave the app in an inconsistent state.
  */
 export function safeSendClientMessage(
-	client: PipecatClient,
+	client:
+		| PipecatClient
+		| {
+				transport: { state: string };
+				sendClientMessage: (type: string, data: unknown) => void;
+		  },
 	messageType: string,
 	data: unknown,
 	onCommunicationError?: (error: string) => void,
 ): SendResult {
 	// Check transport state before sending
-	const transport = client.transport as SmallWebRTCTransport;
+	const transport = client.transport;
 	if (transport.state !== "ready") {
 		const error = `Transport not ready: ${transport.state}`;
 		console.warn(`[safeSend] ${error}`);
@@ -100,7 +104,12 @@ export function safeSendClientMessage(
  * Stops on first failure to allow reconnection to handle re-syncing.
  */
 export function sendConfigMessages(
-	client: PipecatClient,
+	client:
+		| PipecatClient
+		| {
+				transport: { state: string };
+				sendClientMessage: (type: string, data: unknown) => void;
+		  },
 	messages: ConfigMessage[],
 	onCommunicationError?: (error: string) => void,
 ): void {

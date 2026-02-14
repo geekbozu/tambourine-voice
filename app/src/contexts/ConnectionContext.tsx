@@ -1,9 +1,9 @@
-import type { PipecatClient } from "@pipecat-ai/client-js";
 import { useSelector } from "@xstate/react";
 import { createContext, type ReactNode, useContext, useEffect } from "react";
 import { match } from "ts-pattern";
 import { createActor } from "xstate";
 import { tauriAPI } from "../lib/tauri";
+import type { WebSocketClient } from "../lib/WebSocketClient";
 import {
 	type ConnectionMachineActor,
 	type ConnectionMachineStateValue,
@@ -148,10 +148,10 @@ export function useConnectionState(): ConnectionMachineStateValue {
 }
 
 /**
- * Hook to get the current PipecatClient instance.
+ * Hook to get the current WebSocketClient instance.
  * Returns null when not connected.
  */
-export function useConnectionClient(): PipecatClient | null {
+export function useConnectionClient(): WebSocketClient | null {
 	const actor = useConnectionActor();
 	return useSelector(actor, (state) => state.context.client);
 }

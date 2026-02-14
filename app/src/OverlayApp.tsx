@@ -2,15 +2,13 @@ import { Loader } from "@mantine/core";
 import { useResizeObserver, useTimeout } from "@mantine/hooks";
 import {
 	type BotLLMTextData,
-	RTVIEvent,
+	RTVIEvent as PipecatRTVIEvent,
 	type TranscriptData,
 } from "@pipecat-ai/client-js";
 import {
 	PipecatClientProvider,
-	usePipecatClient,
 	useRTVIClientEvent,
 } from "@pipecat-ai/client-react";
-import type { SmallWebRTCTransport } from "@pipecat-ai/small-webrtc-transport";
 import { ThemeProvider, UserAudioComponent } from "@pipecat-ai/voice-ui-kit";
 import { useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
@@ -32,6 +30,7 @@ import type { ActiveAppContextSnapshot } from "./lib/activeAppContext";
 import { useAddHistoryEntry, useSettings, useTypeText } from "./lib/queries";
 import { safeSendClientMessage } from "./lib/safeSendClientMessage";
 import { tauriAPI } from "./lib/tauri";
+import { RTVIEvent } from "./lib/WebSocketClient";
 import type { ConnectionMachineStateValue } from "./machines/connectionMachine";
 import "./overlay-global.css";
 
@@ -263,27 +262,9 @@ function getDisplayState(
 		.exhaustive();
 }
 
-function getPeerConnectionAudioSender(
-	peerConnection: RTCPeerConnection,
-): RTCRtpSender | undefined {
-	return peerConnection
-		.getSenders()
-		.find(
-			(sender) =>
-				sender.track?.kind === "audio" ||
-				peerConnection
-					.getTransceivers()
-					.some(
-						(transceiver) =>
-							transceiver.sender === sender &&
-							transceiver.receiver.track?.kind === "audio",
-					),
-		);
-}
-
 function RecordingControl() {
 	const connectionActor = useConnectionActor();
-	const client = usePipecatClient();
+	const client = useConnectionClient();
 	const queryClient = useQueryClient();
 	const connectionState = useConnectionState();
 	const send = useConnectionSend();
@@ -531,26 +512,9 @@ function RecordingControl() {
 					throw new Error("Native audio track is unavailable");
 				}
 
-				const transport = client.transport as SmallWebRTCTransport;
-				const peerConnection = (
-					transport as unknown as { pc?: RTCPeerConnection }
-				).pc;
-				if (!peerConnection) {
-					throw new Error("WebRTC peer connection is unavailable");
-				}
+				// Start audio capture using WebSocketClient
+				await client.startAudioCapture(nativeAudioTrackForRecording);
 
-				const audioSender = getPeerConnectionAudioSender(peerConnection);
-				if (audioSender) {
-					await audioSender.replaceTrack(nativeAudioTrackForRecording);
-				} else {
-					const nativeAudioTrackStream = new MediaStream([
-						nativeAudioTrackForRecording,
-					]);
-					peerConnection.addTrack(
-						nativeAudioTrackForRecording,
-						nativeAudioTrackStream,
-					);
-				}
 				if (shouldIgnoreStartResults) {
 					return;
 				}
@@ -659,19 +623,11 @@ function RecordingControl() {
 		stopNativeCapture();
 		lastMicIdRef.current = undefined;
 
-		// Always detach track, regardless of displayState
-		// This ensures the mic indicator goes away even if state changed
+		// Always stop audio capture, regardless of displayState
 		if (client) {
-			// Detach the native audio track from WebRTC sender to stop transmitting
+			// Stop WebSocket audio capture
 			try {
-				const transport = client.transport as SmallWebRTCTransport;
-				const pc = (transport as unknown as { pc?: RTCPeerConnection }).pc;
-				if (pc) {
-					const audioSender = getPeerConnectionAudioSender(pc);
-					if (audioSender) {
-						audioSender.replaceTrack(null);
-					}
-				}
+				client.stopAudioCapture();
 				if (nativeAudioTrack) {
 					client.emit(
 						RTVIEvent.TrackStopped,
@@ -680,7 +636,7 @@ function RecordingControl() {
 					);
 				}
 			} catch (error) {
-				console.warn("[Recording] Failed to detach audio track:", error);
+				console.warn("[Recording] Failed to stop audio capture:", error);
 			}
 		}
 
@@ -939,7 +895,7 @@ function RecordingControl() {
 	// Listen to native UserTranscript event for raw transcription
 	// RTVIObserver emits these automatically as user speaks
 	useRTVIClientEvent(
-		RTVIEvent.UserTranscript,
+		PipecatRTVIEvent.UserTranscript,
 		useCallback((data: TranscriptData) => {
 			// Accumulate final transcriptions (ignore partials to avoid duplicates)
 			if (data.final) {
@@ -951,7 +907,7 @@ function RecordingControl() {
 
 	// LLM text streaming handlers (using official RTVI protocol via RTVIObserver)
 	useRTVIClientEvent(
-		RTVIEvent.BotLlmStarted,
+		PipecatRTVIEvent.BotLlmStarted,
 		useCallback(() => {
 			// Reset LLM accumulator when LLM starts generating
 			// Note: rawTranscriptionRef is reset on recording start, not here
@@ -961,7 +917,7 @@ function RecordingControl() {
 	);
 
 	useRTVIClientEvent(
-		RTVIEvent.BotLlmText,
+		PipecatRTVIEvent.BotLlmText,
 		useCallback((data: BotLLMTextData) => {
 			// Accumulate text chunks from LLM
 			streamedLlmResponseChunksRef.current += data.text;
@@ -969,7 +925,7 @@ function RecordingControl() {
 	);
 
 	useRTVIClientEvent(
-		RTVIEvent.BotLlmStopped,
+		PipecatRTVIEvent.BotLlmStopped,
 		useCallback(async () => {
 			if (!finalizeTurnIfPending()) {
 				return;
@@ -1019,7 +975,7 @@ function RecordingControl() {
 
 	// RTVI ServerMessage handler for custom payloads
 	useRTVIClientEvent(
-		RTVIEvent.ServerMessage,
+		PipecatRTVIEvent.ServerMessage,
 		useCallback(
 			async (message: unknown) => {
 				// Use forward-compatible parser (never returns null)
@@ -1098,7 +1054,7 @@ function RecordingControl() {
 	);
 
 	useRTVIClientEvent(
-		RTVIEvent.Error,
+		PipecatRTVIEvent.Error,
 		useCallback(
 			(error: unknown) => {
 				console.error("[Pipecat] Error:", error);
@@ -1162,7 +1118,7 @@ function RecordingControl() {
 	);
 
 	useRTVIClientEvent(
-		RTVIEvent.DeviceError,
+		PipecatRTVIEvent.DeviceError,
 		useCallback((error: unknown) => {
 			console.error("[Pipecat] Device error:", error);
 		}, []),
@@ -1304,7 +1260,11 @@ function RecordingControlWithClient() {
 	}
 
 	return (
-		<PipecatClientProvider client={client}>
+		<PipecatClientProvider
+			client={
+				client as unknown as import("@pipecat-ai/client-js").PipecatClient
+			}
+		>
 			<RecordingControl />
 		</PipecatClientProvider>
 	);

@@ -1,4 +1,3 @@
-import type { PipecatClient } from "@pipecat-ai/client-js";
 import { describe, expect, it, vi } from "vitest";
 import {
 	type AnyActorRef,
@@ -6,6 +5,7 @@ import {
 	fromCallback,
 	fromPromise,
 } from "xstate";
+import type { WebSocketClient } from "../lib/WebSocketClient";
 import {
 	type ConnectionMachineStateValue,
 	connectionMachine,
@@ -105,7 +105,7 @@ function createTestMachine(config: {
 					return new Promise(() => {});
 				}
 				return {
-					client: { id: "mock-client" } as unknown as PipecatClient,
+					client: { id: "mock-client" } as unknown as WebSocketClient,
 					clientUUID: "test-uuid-12345",
 				};
 			}),
@@ -772,7 +772,7 @@ describe("connectionMachine", () => {
 			const machine = connectionMachine.provide({
 				actors: {
 					createClient: fromPromise<
-						{ client: PipecatClient; clientUUID: string },
+						{ client: WebSocketClient; clientUUID: string },
 						{ serverUrl: string }
 					>(async () => {
 						createAttempts++;
