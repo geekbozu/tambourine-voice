@@ -226,6 +226,11 @@ pub fn get_settings(app: AppHandle) -> Result<AppSettings, String> {
             LocalOnlySetting::ServerUrl,
             DEFAULT_SERVER_URL.to_string(),
         ),
+        transport_type: get_setting_from_store(
+            &app,
+            LocalOnlySetting::TransportType,
+            AppSettings::default().transport_type,
+        ),
         llm_formatting_enabled: get_setting_from_store(
             &app,
             HttpSyncedSetting::LlmFormattingEnabled,

@@ -49,6 +49,7 @@ pub struct SettingsExportData {
     pub llm_formatting_enabled: bool,
     pub llm_timeout_raw_fallback_enabled: bool,
     pub server_url: String,
+    pub transport_type: String,
     pub send_active_app_context_enabled: bool,
 }
 
@@ -73,6 +74,7 @@ impl From<AppSettings> for SettingsExportData {
             llm_formatting_enabled: settings.llm_formatting_enabled,
             llm_timeout_raw_fallback_enabled: settings.llm_timeout_raw_fallback_enabled,
             server_url: settings.server_url,
+            transport_type: settings.transport_type,
             send_active_app_context_enabled: settings.send_active_app_context_enabled,
         }
     }
@@ -95,6 +97,11 @@ impl From<SettingsExportData> for AppSettings {
             llm_formatting_enabled: exported_settings.llm_formatting_enabled,
             llm_timeout_raw_fallback_enabled: exported_settings.llm_timeout_raw_fallback_enabled,
             server_url: exported_settings.server_url,
+            transport_type: if exported_settings.transport_type.is_empty() {
+                AppSettings::default().transport_type
+            } else {
+                exported_settings.transport_type
+            },
             send_active_app_context_enabled: exported_settings.send_active_app_context_enabled,
         }
     }
